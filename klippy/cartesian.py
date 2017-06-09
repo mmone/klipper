@@ -26,6 +26,8 @@ class CartKinematics:
         self.steppers[1].set_max_jerk(max_halt_velocity, max_accel)
         self.steppers[2].set_max_jerk(
             min(max_halt_velocity, self.max_z_velocity), max_accel)
+    def get_position(self):
+        return [s.mcu_stepper.get_commanded_position() for s in self.steppers]
     def set_position(self, newpos):
         for i in StepList:
             self.steppers[i].mcu_stepper.set_position(newpos[i])
@@ -64,6 +66,8 @@ class CartKinematics:
             homing_state.set_homed_position(coord)
     def query_endstops(self, print_time, query_flags):
         return homing.query_endstops(print_time, query_flags, self.steppers)
+    def get_z_steppers(self):
+        return [self.steppers[2]]
     def motor_off(self, print_time):
         self.limits = [(1.0, -1.0)] * 3
         for stepper in self.steppers:

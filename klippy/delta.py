@@ -94,6 +94,9 @@ class DeltaKinematics:
         dist = math.sqrt(inv_nmag_sq * (self.arm_length2 - r_sq))
 
         return matrix_sub(circumcenter, matrix_mul(normal, dist))
+    def get_position(self):
+        spos = [s.mcu_stepper.get_commanded_position() for s in self.steppers]
+        return self._actuator_to_cartesian(spos)
     def set_position(self, newpos):
         pos = self._cartesian_to_actuator(newpos)
         for i in StepList:
@@ -125,6 +128,8 @@ class DeltaKinematics:
         homing_state.set_homed_position(self._actuator_to_cartesian(spos))
     def query_endstops(self, print_time, query_flags):
         return homing.query_endstops(print_time, query_flags, self.steppers)
+    def get_z_steppers(self):
+        return self.steppers
     def motor_off(self, print_time):
         self.limit_xy2 = -1.
         for stepper in self.steppers:
