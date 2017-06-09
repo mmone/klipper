@@ -41,7 +41,8 @@ class Homing:
             s.mcu_endstop.home_start(print_time, ENDSTOP_SAMPLE_TIME,
                                      ENDSTOP_SAMPLE_COUNT, s.step_dist / speed)
             endstops.append((s, s.mcu_stepper.get_mcu_position()))
-        self.toolhead.move(self._fill_coord(movepos), speed)
+        finalpos = self._fill_coord(movepos)
+        self.toolhead.move(finalpos, speed)
         move_end_print_time = self.toolhead.get_last_move_time()
         self.toolhead.reset_print_time(print_time)
         for s, last_pos in endstops:
@@ -57,6 +58,7 @@ class Homing:
             if second_home and self.verify_retract and last_pos == post_home_pos:
                 raise EndstopError("Endstop %s still triggered after retract" % (
                     s.name,))
+        self.toolhead.set_position(finalpos)
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
 
