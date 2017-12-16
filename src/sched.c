@@ -58,6 +58,26 @@ static struct timer sentinel_timer = {
     .waketime = 0x80000000,
 };
 
+void
+sched_debug_timers(void)
+{
+    uint32_t bestcount = 0;
+    uint16_t count = 0;
+    struct timer *best = NULL;
+    irqstatus_t flag = irq_save();
+    struct timer *pos = timer_list;
+    for (pos = timer_list; pos->next; pos = pos->next) {
+        count++;
+        if (pos->wakecount > bestcount) {
+            bestcount = pos->wakecount;
+            best = pos;
+        }
+        pos->wakecount = 0;
+    }
+    irq_restore(flag);
+    output("best %hu %u count=%hu", (int)best, bestcount, count);
+}
+
 // Find position for a timer in timer_list and insert it
 static void __always_inline
 insert_timer(struct timer *t, uint32_t waketime)
@@ -81,12 +101,14 @@ void
 sched_add_timer(struct timer *add)
 {
     uint32_t waketime = add->waketime;
+    output("add_timer %hu", (int)add);
     irqstatus_t flag = irq_save();
     if (unlikely(timer_is_before(waketime, timer_list->waketime))) {
         // This timer is before all other scheduled timers
         struct timer *tl = timer_list;
         if (timer_is_before(waketime, timer_read_time() + timer_from_us(2000)))
             try_shutdown("Timer too close");
+        output("add_timer first %hu %hu", (int)add, (int)tl);
         if (tl == &deleted_timer)
             add->next = deleted_timer.next;
         else
@@ -118,6 +140,7 @@ sched_del_timer(struct timer *del)
 {
     irqstatus_t flag = irq_save();
     if (timer_list == del) {
+        output("del_timer first %hu %hu", (int)del, (int)del);
         // Deleting the next active timer - replace with deleted_timer
         deleted_timer.waketime = del->waketime;
         deleted_timer.next = del->next;
@@ -127,6 +150,7 @@ sched_del_timer(struct timer *del)
         struct timer *pos;
         for (pos = timer_list; pos->next; pos = pos->next) {
             if (pos->next == del) {
+                output("del_timer %hu", (int)del);
                 pos->next = del->next;
                 break;
             }
@@ -141,6 +165,7 @@ sched_timer_dispatch(void)
 {
     // Invoke timer callback
     struct timer *t = timer_list;
+    t->wakecount++;
     uint_fast8_t res;
     uint32_t updated_waketime;
     if (CONFIG_INLINE_STEPPER_HACK && likely(!t->func)) {

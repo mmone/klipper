@@ -287,6 +287,12 @@ stats_update(uint32_t start, uint32_t cur)
         stats_send_time_high++;
     stats_send_time = cur;
     count = sum = sumsq = 0;
+
+    void sched_debug_timers(void);
+    sched_debug_timers();
+
+    extern uint32_t timer_total, timer_repeat, timer_defer;
+    output("timer: %u %u %u", timer_total, timer_repeat, timer_defer);
 }
 
 

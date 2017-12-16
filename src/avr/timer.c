@@ -161,9 +161,12 @@ static struct timer wrap_timer = {
 #define TIMER_MIN_TRY_TICKS (TIMER_MIN_ENTRY_TICKS + TIMER_MIN_EXIT_TICKS)
 #define TIMER_DEFER_REPEAT_TICKS 256
 
+uint32_t timer_total, timer_repeat, timer_defer;
+
 // Hardware timer IRQ handler - dispatch software timers
 ISR(TIMER1_COMPA_vect)
 {
+    uint16_t repeat_count = 0;
     uint16_t next;
     for (;;) {
         // Run the next software timer
@@ -177,6 +180,7 @@ ISR(TIMER1_COMPA_vect)
                 if (unlikely(TIFR1 & (1<<OCF1B)))
                     goto check_defer;
                 irq_disable();
+                repeat_count++;
                 break;
             }
 
@@ -197,6 +201,7 @@ ISR(TIMER1_COMPA_vect)
             if ((int16_t)(next - now) < (int16_t)(-timer_from_us(1000)))
                 try_shutdown("Rescheduled timer in the past");
             if (sched_tasks_busy()) {
+                timer_defer++;
                 timer_repeat_set(now + TIMER_REPEAT_TICKS);
                 next = now + TIMER_DEFER_REPEAT_TICKS;
                 goto done;
@@ -208,4 +213,6 @@ ISR(TIMER1_COMPA_vect)
 
 done:
     timer_set(next);
+    timer_repeat += repeat_count;
+    timer_total++;
 }

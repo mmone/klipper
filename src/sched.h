@@ -15,6 +15,7 @@
 struct timer {
     struct timer *next;
     uint_fast8_t (*func)(struct timer*);
+    uint32_t wakecount;
     uint32_t waketime;
 };
 
