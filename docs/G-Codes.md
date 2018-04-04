@@ -71,6 +71,9 @@ The following standard commands are supported:
   cycles. If the WRITE_FILE parameter is enabled, then the file
   /tmp/heattest.txt will be created with a log of all temperature
   samples taken during the test.
+- `SET_PRESSURE_ADVANCE [ADVANCE=<pressure_advance>]
+  [ADVANCE_LOOKAHEAD_TIME=<pressure_advance_lookahead_time>]`:
+  Set pressure advance parameters.
 - `RESTART`: This will cause the host software to reload its config
   and perform an internal reset. This command will not clear error
   state from the micro-controller (see FIRMWARE_RESTART) nor will it
@@ -83,8 +86,8 @@ The following standard commands are supported:
 
 ## Custom Pin Commands
 
-The following command is available when a "digital_output" or
-"pwm_output" config section is enabled:
+The following command is available when an "output_pin" config section
+is enabled:
 - `SET_PIN PIN=config_name VALUE=<value>`
 
 ## Servo Commands
@@ -124,7 +127,7 @@ section is enabled:
 
 ## Dual Carriages
 
-The following commands are available when the "dual_carriage" config
+The following command is available when the "dual_carriage" config
 section is enabled:
 - `SET_DUAL_CARRIAGE CARRIAGE=[0|1]`: This command will set the active
   carriage. It is typically invoked from the activate_gcode and
