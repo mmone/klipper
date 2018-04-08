@@ -4,6 +4,8 @@
 
 PYTHONDIR="${HOME}/klippy-env"
 
+SVGPATHTOOLS_REPO="https://github.com/CatherineH/svgpathtools"
+
 # Step 1: Install system packages
 install_packages()
 {
@@ -36,7 +38,13 @@ create_virtualenv()
     [ ! -d ${PYTHONDIR} ] && virtualenv ${PYTHONDIR}
 
     # Install/update dependencies
-    ${PYTHONDIR}/bin/pip install cffi==1.6.0 pyserial==3.2.1 greenlet==0.4.10 svgwrite==1.1.12 svgpathtools==1.3.2
+    ${PYTHONDIR}/bin/pip install cffi==1.6.0 pyserial==3.2.1 greenlet==0.4.10 svgwrite==1.1.12
+    
+    # Clone and install svgpathtools if it doesn't already exist
+    if [ ! -d "${HOME}/svgpathtools" ]; then
+      git clone ${SVGPATHTOOLS_REPO} "${HOME}/svgpathtools"
+      ${PYTHONDIR}/bin/pip install "${HOME}/svgpathtools"
+    fi
 }
 
 # Step 3: Install startup script
