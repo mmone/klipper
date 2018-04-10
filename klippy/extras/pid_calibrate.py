@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import extruder, heater
+import heater
 
 class PIDCalibrate:
     def __init__(self, config):
@@ -18,8 +18,9 @@ class PIDCalibrate:
         heater_name = self.gcode.get_str('HEATER', params)
         target = self.gcode.get_float('TARGET', params)
         write_file = self.gcode.get_int('WRITE_FILE', params, 0)
+        pheater = self.printer.lookup_object('heater')
         try:
-            heater = extruder.get_printer_heater(self.printer, heater_name)
+            heater = pheater.lookup_heater(heater_name)
         except self.printer.config_error as e:
             raise self.gcode.error(str(e))
         print_time = self.printer.lookup_object('toolhead').get_last_move_time()
@@ -28,6 +29,7 @@ class PIDCalibrate:
         try:
             heater.set_temp(print_time, target)
         except heater.error as e:
+            heater.set_control(old_control)
             raise self.gcode.error(str(e))
         self.gcode.bg_temp(heater)
         heater.set_control(old_control)
@@ -58,10 +60,10 @@ class ControlAutoTune:
     # Heater control
     def set_pwm(self, read_time, value):
         if value != self.last_pwm:
-            self.pwm_samples.append((read_time + heater.PWM_DELAY, value))
+            self.pwm_samples.append((read_time + self.heater.pwm_delay, value))
             self.last_pwm = value
         self.heater.set_pwm(read_time, value)
-    def adc_callback(self, read_time, temp):
+    def temperature_callback(self, read_time, temp):
         self.temp_samples.append((read_time, temp))
         if self.heating and temp >= self.heater.target_temp:
             self.heating = False
