@@ -4,17 +4,20 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import stepper, heater, homing
+import stepper, homing
 
 EXTRUDE_DIFF_IGNORE = 1.02
 
 class PrinterExtruder:
     def __init__(self, printer, config):
+        self.printer = printer
+        self.name = config.get_name()
         shared_heater = config.get('shared_heater', None)
+        pheater = printer.lookup_object('heater')
         if shared_heater is None:
-            self.heater = heater.PrinterHeater(printer, config)
+            self.heater = pheater.setup_heater(config)
         else:
-            self.heater = get_printer_heater(printer, shared_heater)
+            self.heater = pheater.lookup_heater(shared_heater)
         self.stepper = stepper.PrinterStepper(printer, config)
         self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
         filament_diameter = config.getfloat(
@@ -39,12 +42,13 @@ class PrinterExtruder:
         self.deactivate_gcode = config.get('deactivate_gcode', '')
         self.pressure_advance = config.getfloat(
             'pressure_advance', 0., minval=0.)
-        self.pressure_advance_lookahead_time = 0.
-        if self.pressure_advance:
-            self.pressure_advance_lookahead_time = config.getfloat(
-                'pressure_advance_lookahead_time', 0.010, minval=0.)
+        self.pressure_advance_lookahead_time = config.getfloat(
+            'pressure_advance_lookahead_time', 0.010, minval=0.)
         self.need_motor_enable = True
         self.extrude_pos = 0.
+        self.printer.lookup_object('gcode').register_command(
+            "SET_PRESSURE_ADVANCE", self.cmd_SET_PRESSURE_ADVANCE,
+            desc=self.cmd_SET_PRESSURE_ADVANCE_help)
     def get_heater(self):
         return self.heater
     def set_active(self, print_time, is_active):
@@ -104,7 +108,7 @@ class PrinterExtruder:
         return move.max_cruise_v2
     def lookahead(self, moves, flush_count, lazy):
         lookahead_t = self.pressure_advance_lookahead_time
-        if not lookahead_t:
+        if not self.pressure_advance or not lookahead_t:
             return flush_count
         # Calculate max_corner_v - the speed the head will accelerate
         # to after cornering.
@@ -220,6 +224,22 @@ class PrinterExtruder:
             step_const(move_time, start_pos, -retract_d, retract_v, accel)
             start_pos -= retract_d
         self.extrude_pos = start_pos
+    cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
+    def cmd_SET_PRESSURE_ADVANCE(self, params):
+        self.printer.lookup_object('toolhead').get_last_move_time()
+        gcode = self.printer.lookup_object('gcode')
+        if 'ADVANCE' in params:
+            v = gcode.get_float('ADVANCE', params)
+            self.pressure_advance = v if v > 0. else 0.
+        if 'ADVANCE_LOOKAHEAD_TIME' in params:
+            v = gcode.get_float('ADVANCE_LOOKAHEAD_TIME', params)
+            self.pressure_advance_lookahead_time = v if v > 0. else 0.
+        msg = ("pressure_advance: %.6f\n"
+               "pressure_advance_lookahead_time: %.6f\n" % (
+                self.pressure_advance,
+                self.pressure_advance_lookahead_time))
+        self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
+        gcode.respond_info(msg)
 
 # Dummy extruder class used when a printer has no extruder at all
 class DummyExtruder:
@@ -255,12 +275,3 @@ def get_printer_extruders(printer):
             break
         out.append(extruder)
     return out
-
-def get_printer_heater(printer, name):
-    if name == 'heater_bed':
-        return printer.lookup_object(name)
-    if name == 'extruder':
-        name = 'extruder0'
-    if name.startswith('extruder'):
-        return printer.lookup_object(name).get_heater()
-    raise printer.config_error("Unknown heater '%s'" % (name,))

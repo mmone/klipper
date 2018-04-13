@@ -36,6 +36,7 @@ MCU_PINS = {
     "at90usb1286": port_pins(6), "at90usb646": port_pins(6),
     "atmega1280": port_pins(12), "atmega2560": port_pins(12),
     "sam3x8e": port_pins(4, 32),
+    "stm32f103": port_pins(5, 16),
     "pru": beaglebone_pins(),
     "linux": {"analog%d" % i: i for i in range(8)}, # XXX
 }
@@ -242,9 +243,3 @@ class PrinterPins:
 
 def add_printer_objects(printer, config):
     printer.add_object('pins', PrinterPins())
-
-def get_printer_pins(printer):
-    return printer.lookup_object('pins')
-
-def setup_pin(printer, pin_type, pin_desc):
-    return get_printer_pins(printer).setup_pin(pin_type, pin_desc)

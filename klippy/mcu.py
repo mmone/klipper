@@ -424,9 +424,8 @@ class MCU:
         self._emergency_stop_cmd = None
         self._is_shutdown = self._is_timeout = False
         self._shutdown_msg = ""
-        printer.set_rollover_info(self._name, None)
         # Config building
-        pins.get_printer_pins(printer).register_chip(self._name, self)
+        printer.lookup_object('pins').register_chip(self._name, self)
         self._oid_count = 0
         self._config_objects = []
         self._init_cmds = []
@@ -559,7 +558,6 @@ class MCU:
             self._check_restart("CRC mismatch")
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         move_count = config_params['move_count']
-        logging.info("Configured MCU '%s' (%d moves)", self._name, move_count)
         msgparser = self._serial.msgparser
         info = [
             "Configured MCU '%s' (%d moves)" % (self._name, move_count),
