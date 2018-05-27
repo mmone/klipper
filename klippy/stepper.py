@@ -35,6 +35,7 @@ def lookup_enable_pin(ppins, pin):
 # Code storing the definitions for a stepper motor
 class PrinterStepper:
     def __init__(self, printer, config):
+        self.printer = printer
         self.name = config.get_name()
         if self.name.startswith('stepper_'):
             self.name = self.name[8:]
@@ -50,6 +51,11 @@ class PrinterStepper:
         self.step_const = self.mcu_stepper.step_const
         self.step_delta = self.mcu_stepper.step_delta
         self.enable = lookup_enable_pin(ppins, config.get('enable_pin', None))
+        # Register STEPPER_BUZZ command
+        self.gcode = printer.lookup_object('gcode')
+        self.gcode.register_mux_command(
+            'STEPPER_BUZZ', 'STEPPER', config.get_name(), self.cmd_STEPPER_BUZZ,
+            desc=self.cmd_STEPPER_BUZZ_help)
     def _dist_to_time(self, dist, start_velocity, accel):
         # Calculate the time it takes to travel a distance with constant accel
         time_offset = start_velocity / accel
@@ -68,24 +74,58 @@ class PrinterStepper:
         if self.need_motor_enable != (not enable):
             self.enable.set_enable(print_time, enable)
         self.need_motor_enable = not enable
+    cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
+    def cmd_STEPPER_BUZZ(self, params):
+        logging.info("Stepper buzz %s", self.name)
+        need_motor_enable = self.need_motor_enable
+        # Move stepper
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        pos = self.mcu_stepper.get_commanded_position()
+        print_time = toolhead.get_last_move_time()
+        if need_motor_enable:
+            self.motor_enable(print_time, 1)
+            print_time += .1
+        was_ignore = self.mcu_stepper.set_ignore_move(False)
+        for i in range(10):
+            self.step_const(print_time, pos, 1., 4., 0.)
+            print_time += .3
+            self.step_const(print_time, pos + 1., -1., 4., 0.)
+            toolhead.reset_print_time(print_time + .7)
+            print_time = toolhead.get_last_move_time()
+        self.mcu_stepper.set_ignore_move(was_ignore)
+        if need_motor_enable:
+            print_time += .1
+            self.motor_enable(print_time, 0)
+            toolhead.reset_print_time(print_time)
 
 # Support for stepper controlled linear axis with an endstop
 class PrinterHomingStepper(PrinterStepper):
-    def __init__(self, printer, config, default_position=None):
+    def __init__(self, printer, config, need_position_minmax=True,
+                 default_position_endstop=None):
         PrinterStepper.__init__(self, printer, config)
         # Endstop and its position
         ppins = printer.lookup_object('pins')
         self.mcu_endstop = ppins.setup_pin('endstop', config.get('endstop_pin'))
         self.mcu_endstop.add_stepper(self.mcu_stepper)
-        if default_position is None:
+        if default_position_endstop is None:
             self.position_endstop = config.getfloat('position_endstop')
         else:
             self.position_endstop = config.getfloat(
-                'position_endstop', default_position)
+                'position_endstop', default_position_endstop)
         # Axis range
-        self.position_min = config.getfloat('position_min', 0.)
-        self.position_max = config.getfloat(
-            'position_max', 0., above=self.position_min)
+        if need_position_minmax:
+            self.position_min = config.getfloat('position_min', 0.)
+            self.position_max = config.getfloat(
+                'position_max', above=self.position_min)
+        else:
+            self.position_min = 0.
+            self.position_max = self.position_endstop
+        if (self.position_endstop < self.position_min
+            or self.position_endstop > self.position_max):
+            raise config.error(
+                "position_endstop in section '%s' must be between"
+                " position_min and position_max" % config.get_name())
         # Homing mechanics
         self.homing_speed = config.getfloat('homing_speed', 5.0, above=0.)
         self.homing_retract_dist = config.getfloat(
