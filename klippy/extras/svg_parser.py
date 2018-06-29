@@ -12,6 +12,9 @@ class SvgParser:
         self.printer = config.get_printer()
         self.z_lift_height = config.getfloat('z_lift_height', 2.0)
         self.z_draw_height = config.getfloat('z_draw_height', 0.0)
+        self.sample_spacing = config.getfloat('sample_spacing', 2.0)
+        self.default_dpi = config.getfloat('default_dpi', 72)
+        self.exclution_length = config.getfloat('exclution_length', 0.1)
         sp = config.get('storage_path')
         self.storage_path_dirname = os.path.normpath(os.path.expanduser(sp))
         self.paths = None
@@ -29,13 +32,11 @@ class SvgParser:
         self.gcode.register_command('SVG_START', self.cmd_start)
         self.gcode.register_command('SVG_PAUSE', self.cmd_pause)
         self.gcode.register_command('SVG_STATUS', self.cmd_status)
-        self.gcode.register_command('SVG_CANCEL', self.cmd_cancel)
     cmd_svg_help = "SVG processor commands: \n"
     "- SVG_SELECT\n"
     "- SVG_START\n"
     "- SVG_PAUSE\n"
     "- SVG_STATUS\n"
-    "- SVG_CANCEL"
     def printer_state(self, state):
         if state == 'shutdown' and self.work_timer is not None:
             self.must_pause_work = True
@@ -53,15 +54,15 @@ class SvgParser:
         if self.work_timer is not None and self.path_count:
             progress = float(self.current_path) / self.path_count
         return {'progress': progress}
-    def pixels_to_mm(self, value, dpi):
-        return value * 25.4 / dpi
-    def mm_to_pixels(self, value, dpi):
-        return value / 25.4 * dpi
+    def px_to_mm(self, value):
+        return value * 25.4 / self.default_dpi
+    def mm_to_pixels(self, value):
+        return value / 25.4 * self.default_dpi
     def lift_pen(self, head):
         pos = head.get_position()
         pos[2] = self.z_lift_height
         head.move(pos, 5)
-    def engage_pen(self, head):
+    def engage_tool(self, head):
         pos = head.get_position()
         pos[2] = self.z_draw_height
         head.move(pos, 5)
@@ -102,6 +103,7 @@ class SvgParser:
         self.current_path = self.current_segment = 0
         self.path_count = len(self.paths)
         self.gcode.respond("File opened:%s Number of paths:%d" % (filename, self.path_count))
+        # This seems to be necessary to update octoprints display of the currently printed file
         self.gcode.respond("File opened:%s Size:%d" % (filename, self.path_count))
         self.gcode.respond("File selected")
     def cmd_start(self, params):
@@ -124,39 +126,42 @@ class SvgParser:
             return
         self.gcode.respond("SVG printing path %d/%d" % (
             self.current_path, self.path_count))
-    def cmd_cancel(self, params):
-        # Cancel SVG print
-        pass
     # Background work timer
     def work_handler(self, eventtime):
         self.reactor.unregister_timer(self.work_timer)
         toolhead = self.printer.lookup_object('toolhead')
         points = []
-        stepover = self.mm_to_pixels(2.0, 72)
+        _sample_spacing = self.mm_to_pixels(self.sample_spacing)
         speed = 8
         while not self.must_pause_work:
-            logging.info("path {0}/{1} segment {2}".format(self.current_path, self.path_count, self.current_segment))
+            logging.info("SVG path {0}/{1} segment {2}".format(self.current_path, self.path_count, self.current_segment))
             if self.current_path < self.path_count:
+                # exclude very shor paths
+                if self.paths[self.current_path].length() < self.exclution_length:
+                    self.current_path += 1
+                    continue
                 if self.current_segment < len(self.paths[self.current_path]):
-                    logging.info("  - segment {0}".format(self.current_segment))
-                    
+                    logging.info(" - segment {0}".format(self.current_segment))
                     segment = self.paths[self.current_path][self.current_segment]
-                    
                     if type(segment) is Line:
-                        points.append([self.pixels_to_mm(real(segment.start), 72), self.pixels_to_mm(imag(segment.start), 72), self.z_draw_height, 0])
-                        points.append([self.pixels_to_mm(real(segment.end), 72), self.pixels_to_mm(imag(segment.end), 72), self.z_draw_height, 0])
-                    else:                    
-                        steps = int(segment.length() / stepover)
+                        points.append([self.px_to_mm(real(segment.start)), self.px_to_mm(imag(segment.start)), self.z_draw_height, 0])
+                        points.append([self.px_to_mm(real(segment.end)), self.px_to_mm(imag(segment.end)), self.z_draw_height, 0])
+                    else:
+                        steps = int(segment.length() / _sample_spacing)
+                        # get a polynomial representation of the segment
+                        poly = segment.poly()
                         for i in range(0, steps):
-                            point = segment.point(i / (steps * 1.0))
-                            points.append([self.pixels_to_mm(real(point), 72), self.pixels_to_mm(imag(point), 72), self.z_draw_height, 0])
-                    p = points.pop(0)
-                    toolhead.move(p, speed)
-                    self.engage_pen(toolhead)
+                            point = poly(i / (steps * 1.0))# segment.point(i / (steps * 1.0))
+                            points.append([self.px_to_mm(real(point)), self.px_to_mm(imag(point)), self.z_draw_height, 0])
+                    if points:
+                        p = points.pop(0)
+                        toolhead.move(p, speed)
+                    # first point in first segment of this path we need to engage the tool
+                    if self.current_segment == 0:
+                        self.engage_tool(toolhead)
                     while points:
                         p = points.pop(0)
                         toolhead.move(p, speed)
-                        
                     self.current_segment += 1
                 else:
                     self.current_path += 1
