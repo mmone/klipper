@@ -5,15 +5,33 @@
 set -eux
 
 # Paths to tools installed by travis-install.sh
-export PATH=${PWD}/gcc-arm-none-eabi-7-2017-q4-major/bin:${PATH}
-PYTHON=${PWD}/python-env/bin/python
+MAIN_DIR=${PWD}
+BUILD_DIR=${PWD}/travis_build
+export PATH=${BUILD_DIR}/gcc-arm-none-eabi-7-2017-q4-major/bin:${PATH}
+export PATH=${BUILD_DIR}/pru-gcc/bin:${PATH}
+PYTHON=${BUILD_DIR}/python-env/bin/python
+
+
+######################################################################
+# Check for whitespace errors
+######################################################################
+
+echo "travis_fold:start:check_whitespace"
+echo "=============== Check whitespace"
+WS_DIRS="src/ config/ klippy/ scripts/"
+WS_EXCLUDE="-path src/lib -prune -o -path scripts/kconfig -prune"
+WS_FILES="-o -name '*.[csh]' -o -name '*.py' -o -name '*.sh'"
+WS_FILES="$WS_FILES -o -name '*.md' -o -name '*.cfg'"
+WS_FILES="$WS_FILES -o -iname 'Makefile' -o -iname 'Kconfig'"
+eval find $WS_DIRS $WS_EXCLUDE $WS_FILES | xargs ./scripts/check_whitespace.py
+echo "travis_fold:end:check_whitespace"
 
 
 ######################################################################
 # Run compile tests for several different MCU types
 ######################################################################
 
-DICTDIR=${PWD}/dict
+DICTDIR=${BUILD_DIR}/dict
 mkdir -p ${DICTDIR}
 
 for TARGET in test/configs/*.config ; do
@@ -34,11 +52,10 @@ done
 # Verify klippy host software
 ######################################################################
 
-HOSTDIR=${PWD}/hosttest
+HOSTDIR=${BUILD_DIR}/hosttest
 mkdir -p ${HOSTDIR}
 
 echo "travis_fold:start:klippy"
 echo "=============== Test invoke klippy"
-$PYTHON klippy/klippy.py config/example.cfg -i /dev/null -o ${HOSTDIR}/output -v -d ${DICTDIR}/atmega2560-16mhz.dict
-$PYTHON klippy/parsedump.py ${DICTDIR}/atmega2560-16mhz.dict ${HOSTDIR}/output > ${HOSTDIR}/output-parsed
+$PYTHON scripts/test_klippy.py -d ${DICTDIR} test/klippy/*.test
 echo "travis_fold:end:klippy"
