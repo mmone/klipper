@@ -83,7 +83,7 @@ class GCodeParser:
                 cmd, key, value, prev_key))
         if value in prev_values:
             raise error("mux command %s %s %s already registered (%s)" % (
-                cmd, key, value))
+                cmd, key, value, prev_values))
         prev_values[value] = func
     def set_move_transform(self, transform):
         if self.move_transform is not None:
@@ -105,7 +105,7 @@ class GCodeParser:
             self.gcode_handlers = self.base_gcode_handlers
             self.dump_debug()
             if self.is_fileinput:
-                self.printer.request_exit()
+                self.printer.request_exit('error_exit')
             return
         if state != 'ready':
             return
@@ -264,6 +264,8 @@ class GCodeParser:
         if len(lines) > 1:
             self.respond_info("\n".join(lines))
         self.respond('!! %s' % (lines[0].strip(),))
+        if self.is_fileinput:
+            self.printer.request_exit('error_exit')
     # Parameter parsing helpers
     class sentinel: pass
     def get_str(self, name, params, default=sentinel, parser=str,
@@ -597,13 +599,13 @@ class GCodeParser:
             return
         kin = self.toolhead.get_kinematics()
         steppers = kin.get_steppers()
-        mcu_pos = " ".join(["%s:%d" % (s.name, s.mcu_stepper.get_mcu_position())
+        mcu_pos = " ".join(["%s:%d" % (s.get_name(), s.get_mcu_position())
                             for s in steppers])
         stepper_pos = " ".join(
-            ["%s:%.6f" % (s.name, s.mcu_stepper.get_commanded_position())
+            ["%s:%.6f" % (s.get_name(), s.get_commanded_position())
              for s in steppers])
         kinematic_pos = " ".join(["%s:%.6f"  % (a, v)
-                                  for a, v in zip("XYZE", kin.get_position())])
+                                  for a, v in zip("XYZE", kin.calc_position())])
         toolhead_pos = " ".join(["%s:%.6f" % (a, v) for a, v in zip(
             "XYZE", self.toolhead.get_position())])
         gcode_pos = " ".join(["%s:%.6f"  % (a, v)
