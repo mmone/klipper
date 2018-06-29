@@ -1,6 +1,6 @@
 // Serial port command queuing
 //
-// Copyright (C) 2016  Kevin O'Connor <kevin@koconnor.net>
+// Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 //
@@ -23,6 +23,7 @@
 #include <string.h> // memset
 #include <termios.h> // tcflush
 #include <unistd.h> // pipe
+#include "compiler.h" // __visible
 #include "list.h" // list_add_tail
 #include "pyhelper.h" // get_monotonic
 #include "serialqueue.h" // struct queue_message
@@ -357,18 +358,19 @@ struct serialqueue {
     pthread_cond_t cond;
     int receive_waiting;
     // Baud / clock tracking
+    int receive_window;
     double baud_adjust, idle_time;
     double est_freq, last_clock_time;
     uint64_t last_clock;
     double last_receive_sent_time;
     // Retransmit support
     uint64_t send_seq, receive_seq;
-    uint64_t ignore_nak_seq, retransmit_seq, rtt_sample_seq;
+    uint64_t ignore_nak_seq, last_ack_seq, retransmit_seq, rtt_sample_seq;
     struct list_head sent_queue;
     double srtt, rttvar, rto;
     // Pending transmission message queues
     struct list_head pending_queues;
-    int ready_bytes, stalled_bytes, need_ack_bytes;
+    int ready_bytes, stalled_bytes, need_ack_bytes, last_ack_bytes;
     uint64_t need_kick_clock;
     // Received messages
     struct list_head receive_queue;
@@ -458,6 +460,7 @@ update_receive_seq(struct serialqueue *sq, double eventtime, uint64_t rseq)
         if (rseq == sent_seq) {
             // Found sent message corresponding with the received sequence
             sq->last_receive_sent_time = sent->receive_time;
+            sq->last_ack_bytes = sent->len;
             break;
         }
     }
@@ -509,10 +512,14 @@ handle_message(struct serialqueue *sq, double eventtime, int len)
     if (rseq != sq->receive_seq)
         // New sequence number
         update_receive_seq(sq, eventtime, rseq);
-    else if (len == MESSAGE_MIN && rseq > sq->ignore_nak_seq
-             && !list_empty(&sq->sent_queue))
-        // Duplicate sequence number in an empty message is a nak
-        pollreactor_update_timer(&sq->pr, SQPT_RETRANSMIT, PR_NOW);
+    if (len == MESSAGE_MIN) {
+        // Ack/nak message
+        if (sq->last_ack_seq < rseq)
+            sq->last_ack_seq = rseq;
+        else if (rseq > sq->ignore_nak_seq && !list_empty(&sq->sent_queue))
+            // Duplicate Ack is a Nak - do fast retransmit
+            pollreactor_update_timer(&sq->pr, SQPT_RETRANSMIT, PR_NOW);
+    }
 
     if (len > MESSAGE_MIN) {
         // Add message to receive queue
@@ -690,11 +697,18 @@ build_and_send_command(struct serialqueue *sq, double eventtime)
 static double
 check_send_command(struct serialqueue *sq, double eventtime)
 {
-    if ((sq->send_seq - sq->receive_seq >= MESSAGE_SEQ_MASK
-         || (sq->need_ack_bytes - 2*MESSAGE_MAX) * sq->baud_adjust > sq->srtt)
+    if (sq->send_seq - sq->receive_seq >= MESSAGE_SEQ_MASK
         && sq->receive_seq != (uint64_t)-1)
         // Need an ack before more messages can be sent
         return PR_NEVER;
+    if (sq->send_seq > sq->receive_seq && sq->receive_window) {
+        int need_ack_bytes = sq->need_ack_bytes + MESSAGE_MAX;
+        if (sq->last_ack_seq < sq->receive_seq)
+            need_ack_bytes += sq->last_ack_bytes;
+        if (need_ack_bytes > sq->receive_window)
+            // Wait for ack from past messages before sending next message
+            return PR_NEVER;
+    }
 
     // Check for stalled messages now ready
     double idletime = eventtime > sq->idle_time ? eventtime : sq->idle_time;
@@ -784,7 +798,7 @@ background_thread(void *data)
 }
 
 // Create a new 'struct serialqueue' object
-struct serialqueue *
+struct serialqueue * __visible
 serialqueue_alloc(int serial_fd, int write_only)
 {
     struct serialqueue *sq = malloc(sizeof(*sq));
@@ -846,7 +860,7 @@ fail:
 }
 
 // Request that the background thread exit
-void
+void __visible
 serialqueue_exit(struct serialqueue *sq)
 {
     pollreactor_do_exit(&sq->pr);
@@ -857,7 +871,7 @@ serialqueue_exit(struct serialqueue *sq)
 }
 
 // Free all resources associated with a serialqueue
-void
+void __visible
 serialqueue_free(struct serialqueue *sq)
 {
     if (!sq)
@@ -882,7 +896,7 @@ serialqueue_free(struct serialqueue *sq)
 }
 
 // Allocate a 'struct command_queue'
-struct command_queue *
+struct command_queue * __visible
 serialqueue_alloc_commandqueue(void)
 {
     struct command_queue *cq = malloc(sizeof(*cq));
@@ -893,7 +907,7 @@ serialqueue_alloc_commandqueue(void)
 }
 
 // Free a 'struct command_queue'
-void
+void __visible
 serialqueue_free_commandqueue(struct command_queue *cq)
 {
     if (!cq)
@@ -943,7 +957,7 @@ serialqueue_send_batch(struct serialqueue *sq, struct command_queue *cq
 
 // Schedule the transmission of a message on the serial port at a
 // given time and priority.
-void
+void __visible
 serialqueue_send(struct serialqueue *sq, struct command_queue *cq
                  , uint8_t *msg, int len, uint64_t min_clock, uint64_t req_clock)
 {
@@ -975,7 +989,7 @@ serialqueue_encode_and_send(struct serialqueue *sq, struct command_queue *cq
 
 // Return a message read from the serial port (or wait for one if none
 // available)
-void
+void __visible
 serialqueue_pull(struct serialqueue *sq, struct pull_queue_message *pqm)
 {
     pthread_mutex_lock(&sq->lock);
@@ -1009,7 +1023,7 @@ exit:
     pthread_mutex_unlock(&sq->lock);
 }
 
-void
+void __visible
 serialqueue_set_baud_adjust(struct serialqueue *sq, double baud_adjust)
 {
     pthread_mutex_lock(&sq->lock);
@@ -1017,9 +1031,17 @@ serialqueue_set_baud_adjust(struct serialqueue *sq, double baud_adjust)
     pthread_mutex_unlock(&sq->lock);
 }
 
+void __visible
+serialqueue_set_receive_window(struct serialqueue *sq, int receive_window)
+{
+    pthread_mutex_lock(&sq->lock);
+    sq->receive_window = receive_window;
+    pthread_mutex_unlock(&sq->lock);
+}
+
 // Set the estimated clock rate of the mcu on the other end of the
 // serial port
-void
+void __visible
 serialqueue_set_clock_est(struct serialqueue *sq, double est_freq
                           , double last_clock_time, uint64_t last_clock)
 {
@@ -1031,7 +1053,7 @@ serialqueue_set_clock_est(struct serialqueue *sq, double est_freq
 }
 
 // Return a string buffer containing statistics for the serial port
-void
+void __visible
 serialqueue_get_stats(struct serialqueue *sq, char *buf, int len)
 {
     struct serialqueue stats;
@@ -1053,7 +1075,7 @@ serialqueue_get_stats(struct serialqueue *sq, char *buf, int len)
 }
 
 // Extract old messages stored in the debug queues
-int
+int __visible
 serialqueue_extract_old(struct serialqueue *sq, int sentq
                         , struct pull_queue_message *q, int max)
 {

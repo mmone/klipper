@@ -14,16 +14,20 @@ STEPCOMPRESS_ERROR_RET = -989898989
 class MCU_stepper:
     def __init__(self, mcu, pin_params):
         self._mcu = mcu
-        self._oid = self._mcu.create_oid()
+        self._oid = oid = self._mcu.create_oid()
         self._step_pin = pin_params['pin']
         self._invert_step = pin_params['invert']
         self._dir_pin = self._invert_dir = None
-        self._commanded_pos = self._mcu_position_offset = 0.
-        self._step_dist = self._inv_step_dist = 1.
+        self._mcu_position_offset = 0.
+        self._step_dist = 0.
         self._min_stop_interval = 0.
         self._reset_cmd_id = self._get_position_cmd = None
-        self._ffi_lib = self._stepqueue = None
-        self._stepcompress_push_const = self._stepcompress_push_delta = None
+        ffi_main, self._ffi_lib = chelper.get_ffi()
+        self._stepqueue = ffi_main.gc(self._ffi_lib.stepcompress_alloc(oid),
+                                      self._ffi_lib.stepcompress_free)
+        self._mcu.register_stepqueue(self._stepqueue)
+        self._stepper_kinematics = self._itersolve_gen_steps = None
+        self.set_ignore_move(False)
     def get_mcu(self):
         return self._mcu
     def setup_dir_pin(self, pin_params):
@@ -35,7 +39,12 @@ class MCU_stepper:
         self._min_stop_interval = min_stop_interval
     def setup_step_distance(self, step_dist):
         self._step_dist = step_dist
-        self._inv_step_dist = 1. / step_dist
+    def setup_itersolve(self, sk):
+        old_sk = self._stepper_kinematics
+        self._stepper_kinematics = sk
+        self._ffi_lib.itersolve_set_stepcompress(
+            sk, self._stepqueue, self._step_dist)
+        return old_sk
     def build_config(self):
         max_error = self._mcu.get_max_stepper_error()
         min_stop_interval = max(0., self._min_stop_interval - max_error)
@@ -55,37 +64,34 @@ class MCU_stepper:
             "reset_step_clock oid=%c clock=%u")
         self._get_position_cmd = self._mcu.lookup_command(
             "stepper_get_position oid=%c")
-        ffi_main, self._ffi_lib = chelper.get_ffi()
-        self._stepqueue = ffi_main.gc(self._ffi_lib.stepcompress_alloc(
-            self._mcu.seconds_to_clock(max_error), step_cmd_id, dir_cmd_id,
-            self._invert_dir, self._oid),
-                                      self._ffi_lib.stepcompress_free)
-        self._mcu.register_stepqueue(self._stepqueue)
-        self.set_ignore_move(False)
+        self._ffi_lib.stepcompress_fill(
+            self._stepqueue, self._mcu.seconds_to_clock(max_error),
+            self._invert_dir, step_cmd_id, dir_cmd_id)
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
         return self._step_dist
-    def set_position(self, pos):
-        steppos = pos * self._inv_step_dist
-        self._mcu_position_offset += self._commanded_pos - steppos
-        self._commanded_pos = steppos
+    def set_position(self, newpos):
+        orig_cmd_pos = self.get_commanded_position()
+        self._ffi_lib.itersolve_set_position(
+            self._stepper_kinematics, newpos[0], newpos[1], newpos[2])
+        self._mcu_position_offset += orig_cmd_pos - self.get_commanded_position()
     def get_commanded_position(self):
-        return self._commanded_pos * self._step_dist
+        return self._ffi_lib.itersolve_get_commanded_pos(
+            self._stepper_kinematics)
     def get_mcu_position(self):
-        mcu_pos = self._commanded_pos + self._mcu_position_offset
+        pos_delta = self.get_commanded_position() + self._mcu_position_offset
+        mcu_pos = pos_delta / self._step_dist
         if mcu_pos >= 0.:
             return int(mcu_pos + 0.5)
         return int(mcu_pos - 0.5)
     def set_ignore_move(self, ignore_move):
-        was_ignore = (self._stepcompress_push_const
-                      is not self._ffi_lib.stepcompress_push_const)
+        was_ignore = (self._itersolve_gen_steps
+                      is not self._ffi_lib.itersolve_gen_steps)
         if ignore_move:
-            self._stepcompress_push_const = (lambda *args: 0)
-            self._stepcompress_push_delta = (lambda *args: 0)
+            self._itersolve_gen_steps = (lambda *args: 0)
         else:
-            self._stepcompress_push_const = self._ffi_lib.stepcompress_push_const
-            self._stepcompress_push_delta = self._ffi_lib.stepcompress_push_delta
+            self._itersolve_gen_steps = self._ffi_lib.itersolve_gen_steps
         return was_ignore
     def note_homing_start(self, homing_clock):
         ret = self._ffi_lib.stepcompress_set_homing(
@@ -108,36 +114,15 @@ class MCU_stepper:
             return
         params = self._get_position_cmd.send_with_response(
             [self._oid], response='stepper_position', response_oid=self._oid)
-        pos = params['pos']
+        pos = params['pos'] * self._step_dist
         if self._invert_dir:
             pos = -pos
-        self._commanded_pos = pos - self._mcu_position_offset
-    def step(self, print_time, sdir):
-        count = self._ffi_lib.stepcompress_push(
-            self._stepqueue, print_time, sdir)
-        if count == STEPCOMPRESS_ERROR_RET:
+        self._ffi_lib.itersolve_set_commanded_pos(
+            self._stepper_kinematics, pos - self._mcu_position_offset)
+    def step_itersolve(self, cmove):
+        ret = self._itersolve_gen_steps(self._stepper_kinematics, cmove)
+        if ret:
             raise error("Internal error in stepcompress")
-        self._commanded_pos += count
-    def step_const(self, print_time, start_pos, dist, start_v, accel):
-        inv_step_dist = self._inv_step_dist
-        step_offset = self._commanded_pos - start_pos * inv_step_dist
-        count = self._stepcompress_push_const(
-            self._stepqueue, print_time, step_offset, dist * inv_step_dist,
-            start_v * inv_step_dist, accel * inv_step_dist)
-        if count == STEPCOMPRESS_ERROR_RET:
-            raise error("Internal error in stepcompress")
-        self._commanded_pos += count
-    def step_delta(self, print_time, dist, start_v, accel
-                   , height_base, startxy_d, arm_d, movez_r):
-        inv_step_dist = self._inv_step_dist
-        height = self._commanded_pos - height_base * inv_step_dist
-        count = self._stepcompress_push_delta(
-            self._stepqueue, print_time, dist * inv_step_dist,
-            start_v * inv_step_dist, accel * inv_step_dist,
-            height, startxy_d * inv_step_dist, arm_d * inv_step_dist, movez_r)
-        if count == STEPCOMPRESS_ERROR_RET:
-            raise error("Internal error in stepcompress")
-        self._commanded_pos += count
 
 class MCU_endstop:
     class TimeoutError(Exception):
@@ -567,6 +552,9 @@ class MCU:
             if start_reason == 'firmware_restart':
                 raise error("Failed automated reset of MCU '%s'" % (self._name,))
         if self._config_crc != config_params['crc']:
+            if config_params['is_shutdown']:
+                raise error("Can not update MCU '%s' config as it is shutdown"
+                            % (self._name,))
             self._check_restart("CRC mismatch")
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         move_count = config_params['move_count']
@@ -602,7 +590,7 @@ class MCU:
         self._config_reset_cmd = self.try_lookup_command("config_reset")
         if (self._restart_method is None
             and (self._reset_cmd is not None
-                 or self.config_reset_cmd is not None)
+                 or self._config_reset_cmd is not None)
             and self._serial.msgparser.get_constant(
                 'SERIAL_BAUD', None) is None):
             self._restart_method = 'command'
@@ -687,7 +675,7 @@ class MCU:
         serialhdl.arduino_reset(self._serialport, self._reactor)
     def _restart_via_command(self):
         if ((self._reset_cmd is None and self._config_reset_cmd is None)
-            or not self._clocksync.is_active(self._reactor.monotonic())):
+            or not self._clocksync.is_active()):
             logging.info("Unable to issue reset command on MCU '%s'", self._name)
             return
         if self._reset_cmd is None:
@@ -736,7 +724,7 @@ class MCU:
             return
         offset, freq = self._clocksync.calibrate_clock(print_time, eventtime)
         self._ffi_lib.steppersync_set_time(self._steppersync, offset, freq)
-        if (self._clocksync.is_active(eventtime) or self.is_fileoutput()
+        if (self._clocksync.is_active() or self.is_fileoutput()
             or self._is_timeout):
             return
         self._is_timeout = True

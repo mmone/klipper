@@ -10,7 +10,7 @@ SVGPATHTOOLS_REPO="https://github.com/CatherineH/svgpathtools"
 install_packages()
 {
     # Packages for python cffi
-    PKGLIST="python-virtualenv libffi-dev"
+    PKGLIST="python-virtualenv virtualenv python-dev libffi-dev build-essential"
     # kconfig requirements
     PKGLIST="${PKGLIST} libncurses-dev"
     # hub-ctrl
@@ -19,6 +19,7 @@ install_packages()
     PKGLIST="${PKGLIST} avrdude gcc-avr binutils-avr avr-libc"
     # ARM chip installation and building
     PKGLIST="${PKGLIST} bossa-cli stm32flash libnewlib-arm-none-eabi"
+    PKGLIST="${PKGLIST} gcc-arm-none-eabi binutils-arm-none-eabi"
 
     # Update system package info
     report_status "Running apt-get update..."
