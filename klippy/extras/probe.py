@@ -43,12 +43,10 @@ class PrinterProbe:
         self.gcode.register_command(
             'QUERY_PROBE', self.cmd_QUERY_PROBE, desc=self.cmd_QUERY_PROBE_help)
     def build_config(self):
-        toolhead = self.printer.lookup_object('toolhead')
-        z_rails = toolhead.get_kinematics().get_rails("Z")
-        for rail in z_rails:
-            for mcu_endstop, name in rail.get_endstops():
-                for mcu_stepper in mcu_endstop.get_steppers():
-                    self.mcu_probe.add_stepper(mcu_stepper)
+        kin = self.printer.lookup_object('toolhead').get_kinematics()
+        for rail in kin.get_rails("Z"):
+            for stepper in rail.get_steppers():
+                stepper.add_to_endstop(self.mcu_probe)
     def setup_pin(self, pin_params):
         if (pin_params['pin'] != 'z_virtual_endstop'
             or pin_params['type'] != 'endstop'):
@@ -106,10 +104,10 @@ class ProbeEndstopWrapper:
         self.query_endstop_wait = self.mcu_endstop.query_endstop_wait
         self.TimeoutError = self.mcu_endstop.TimeoutError
     def home_prepare(self):
-        self.gcode.run_script(self.activate_gcode)
+        self.gcode.run_script_from_command(self.activate_gcode)
         self.mcu_endstop.home_prepare()
     def home_finalize(self):
-        self.gcode.run_script(self.deactivate_gcode)
+        self.gcode.run_script_from_command(self.deactivate_gcode)
         self.mcu_endstop.home_finalize()
 
 # Wrapper that records the last XY position of a virtual endstop probe
@@ -149,9 +147,9 @@ class ProbePointsHelper:
             except:
                 raise config.error("Unable to parse probe points in %s" % (
                     config.get_name()))
-            if len(self.probe_points) < 3:
-                raise config.error("Need at least 3 points for %s" % (
-                    config.get_name()))
+        if len(self.probe_points) < 3:
+            raise config.error("Need at least 3 probe points for %s" % (
+                config.get_name()))
         self.horizontal_move_z = config.getfloat('horizontal_move_z', 5.)
         self.speed = self.lift_speed = config.getfloat('speed', 50., above=0.)
         # Lookup probe object
@@ -186,7 +184,7 @@ class ProbePointsHelper:
         if self.probe is not None:
             try:
                 while self.busy:
-                    self.gcode.run_script("PROBE")
+                    self.gcode.run_script_from_command("PROBE")
                     self.cmd_NEXT({})
             except:
                 self.finalize(False)

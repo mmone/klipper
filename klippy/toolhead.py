@@ -3,8 +3,8 @@
 # Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
-import mcu, homing, cartesian, corexy, delta, extruder
+import math, logging, importlib
+import mcu, homing, chelper, kinematics.extruder
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -17,6 +17,7 @@ class Move:
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
+        self.cmove = toolhead.cmove
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
@@ -91,6 +92,12 @@ class Move:
         # Generate step times for the move
         next_move_time = self.toolhead.get_next_move_time()
         if self.is_kinematic_move:
+            self.toolhead.move_fill(
+                self.cmove, next_move_time,
+                self.accel_t, self.cruise_t, self.decel_t,
+                self.start_pos[0], self.start_pos[1], self.start_pos[2],
+                self.axes_d[0], self.axes_d[1], self.axes_d[2],
+                self.start_v, self.cruise_v, self.accel)
             self.toolhead.kin.move(next_move_time, self)
         if self.axes_d[3]:
             self.toolhead.extruder.move(next_move_time, self)
@@ -226,13 +233,21 @@ class ToolHead:
         self.motor_off_time = config.getfloat('motor_off_time', 600., above=0.)
         self.motor_off_timer = self.reactor.register_timer(
             self._motor_off_handler, self.reactor.NOW)
+        # Setup iterative solver
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.cmove = ffi_main.gc(ffi_lib.move_alloc(), ffi_lib.free)
+        self.move_fill = ffi_lib.move_fill
         # Create kinematics class
-        self.extruder = extruder.DummyExtruder()
+        self.extruder = kinematics.extruder.DummyExtruder()
         self.move_queue.set_extruder(self.extruder)
-        kintypes = {'cartesian': cartesian.CartKinematics,
-                    'corexy': corexy.CoreXYKinematics,
-                    'delta': delta.DeltaKinematics}
-        self.kin = config.getchoice('kinematics', kintypes)(self, config)
+        kin_name = config.get('kinematics')
+        try:
+            mod = importlib.import_module('kinematics.' + kin_name)
+            self.kin = mod.load_kinematics(self, config)
+        except:
+            msg = "Error loading kinematics '%s'" % (kin_name,)
+            logging.exception(msg)
+            raise config.error(msg)
         # SET_VELOCITY_LIMIT command
         gcode = self.printer.lookup_object('gcode')
         gcode.register_command('SET_VELOCITY_LIMIT', self.cmd_SET_VELOCITY_LIMIT,
@@ -353,7 +368,7 @@ class ToolHead:
         self.dwell(STALL_TIME)
         last_move_time = self.get_last_move_time()
         self.kin.motor_off(last_move_time)
-        for ext in extruder.get_printer_extruders(self.printer):
+        for ext in kinematics.extruder.get_printer_extruders(self.printer):
             ext.motor_off(last_move_time)
         self.dwell(STALL_TIME)
         self.need_motor_off = False
@@ -442,5 +457,6 @@ class ToolHead:
         accel = gcode.get_float('S', params, above=0.)
         self.max_accel = min(accel, self.config_max_accel)
 
-def add_printer_objects(printer, config):
-    printer.add_object('toolhead', ToolHead(config))
+def add_printer_objects(config):
+    config.get_printer().add_object('toolhead', ToolHead(config))
+    kinematics.extruder.add_printer_objects(config)

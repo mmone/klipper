@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections
-import homing, extruder
+import homing, kinematics.extruder
 
 class error(Exception):
     pass
@@ -116,7 +116,7 @@ class GCodeParser:
         if self.move_transform is None:
             self.move_with_transform = self.toolhead.move
             self.position_with_transform = self.toolhead.get_position
-        extruders = extruder.get_printer_extruders(self.printer)
+        extruders = kinematics.extruder.get_printer_extruders(self.printer)
         if extruders:
             self.extruder = extruders[0]
             self.toolhead.set_extruder(self.extruder)
@@ -235,12 +235,23 @@ class GCodeParser:
                 self.process_pending()
             self.is_processing_data = False
         return True
-    def run_script(self, script):
+    def run_script_from_command(self, script):
         prev_need_ack = self.need_ack
         try:
             self.process_commands(script.split('\n'), need_ack=False)
         finally:
             self.need_ack = prev_need_ack
+    def run_script(self, script):
+        curtime = self.reactor.monotonic()
+        for line in script.split('\n'):
+            while 1:
+                try:
+                    res = self.process_batch(line)
+                except:
+                    break
+                if res:
+                    break
+                curtime = self.reactor.pause(curtime + 0.100)
     # Response handling
     def ack(self, msg=None):
         if not self.need_ack or self.is_fileinput:
@@ -385,12 +396,12 @@ class GCodeParser:
         self.respond_info('Unknown command:"%s"' % (cmd,))
     def cmd_Tn(self, params):
         # Select Tool
-        extruders = extruder.get_printer_extruders(self.printer)
+        extruders = kinematics.extruder.get_printer_extruders(self.printer)
         index = self.get_int('T', params, minval=0, maxval=len(extruders)-1)
         e = extruders[index]
         if self.extruder is e:
             return
-        self.run_script(self.extruder.get_activate_gcode(False))
+        self.run_script_from_command(self.extruder.get_activate_gcode(False))
         try:
             self.toolhead.set_extruder(e)
         except homing.EndstopError as e:
@@ -399,7 +410,7 @@ class GCodeParser:
         self.reset_last_position()
         self.extrude_factor = 1.
         self.base_position[3] = self.last_position[3]
-        self.run_script(self.extruder.get_activate_gcode(True))
+        self.run_script_from_command(self.extruder.get_activate_gcode(True))
     def cmd_mux(self, params):
         key, values = self.mux_commands[params['#command']]
         if None in values:
@@ -598,7 +609,10 @@ class GCodeParser:
             self.cmd_default(params)
             return
         kin = self.toolhead.get_kinematics()
-        steppers = kin.get_steppers()
+        steppers = []
+        rails = kin.get_rails()
+        for rail in rails:
+            steppers += rail.get_steppers()
         mcu_pos = " ".join(["%s:%d" % (s.get_name(), s.get_mcu_position())
                             for s in steppers])
         stepper_pos = " ".join(
