@@ -3,7 +3,7 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math
+import math, logging
 
 TMC_FREQUENCY=13200000.
 REG_GCONF=0x00
@@ -13,18 +13,29 @@ REG_TCOOLTHRS=0x14
 REG_COOLCONF=0x6d
 REG_PWMCONF=0x70
 
+ReadRegisters = {
+    0x00: "GCONF", 0x01: "GSTAT", 0x04: "IOIN", 0x12: "TSTEP", 0x2d: "XDIRECT",
+    0x6a: "MSCNT", 0x6b: "MSCURACT", 0x6c: "CHOPCONF", 0x6f: "DRV_STATUS",
+    0x71: "PWM_SCALE", 0x73: "LOST_STEPS"
+}
+
 class TMC2130:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.name = config.get_name().split()[1]
         # pin setup
         ppins = self.printer.lookup_object("pins")
         cs_pin = config.get('cs_pin')
-        cs_pin_params = ppins.lookup_pin('digital_out', cs_pin)
-        if cs_pin_params['invert']:
-            raise pins.error("tmc2130 can not invert pin")
+        cs_pin_params = ppins.lookup_pin(cs_pin)
         self.mcu = cs_pin_params['chip']
         pin = cs_pin_params['pin']
         self.oid = self.mcu.create_oid()
+        # Add DUMP_TMC command
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_mux_command(
+            "DUMP_TMC", "STEPPER", self.name,
+            self.cmd_DUMP_TMC, desc=self.cmd_DUMP_TMC_help)
+        # Setup driver registers
         self.mcu.add_config_cmd(
             "config_spi oid=%d bus=%d pin=%s mode=%d rate=%d shutdown_msg=" % (
                 self.oid, 0, cs_pin_params['pin'], 3, 4000000))
@@ -52,8 +63,8 @@ class TMC2130:
         pwm_ampl = config.getint('driver_PWM_AMPL', 128, minval=0, maxval=255)
         # Allow virtual endstop to be created
         self.diag1_pin = config.get('diag1_pin', None)
-        ppins.register_chip("_".join(config.get_name().split()[:2]), self)
-        self.send_spi_cmd = None
+        ppins.register_chip("tmc2130_" + self.name, self)
+        self.spi_send_cmd = self.spi_transfer_cmd = None
         self.mcu.add_config_object(self)
         # calculate current
         vsense = False
@@ -100,9 +111,8 @@ class TMC2130:
         step_dist = stepper_config.getfloat('step_distance')
         step_dist_256 = step_dist / (1 << self.mres)
         return int(TMC_FREQUENCY * step_dist_256 / velocity + .5)
-    def setup_pin(self, pin_params):
-        if (pin_params['pin'] != 'virtual_endstop'
-            or pin_params['type'] != 'endstop'):
+    def setup_pin(self, pin_type, pin_params):
+        if pin_type != 'endstop' or pin_params['pin'] != 'virtual_endstop':
             raise pins.error("tmc2130 virtual endstop only useful as endstop")
         if pin_params['invert'] or pin_params['pullup']:
             raise pins.error("Can not pullup/invert tmc2130 virtual endstop")
@@ -111,10 +121,27 @@ class TMC2130:
         cmd_queue = self.mcu.alloc_command_queue()
         self.spi_send_cmd = self.mcu.lookup_command(
             "spi_send oid=%c data=%*s", cq=cmd_queue)
+        self.spi_transfer_cmd = self.mcu.lookup_command(
+            "spi_transfer oid=%c data=%*s", cq=cmd_queue)
     def set_register(self, addr, val):
         data = [(addr | 0x80) & 0xff, (val >> 24) & 0xff, (val >> 16) & 0xff,
                 (val >> 8) & 0xff, val & 0xff]
         self.spi_send_cmd.send([self.oid, data])
+    cmd_DUMP_TMC_help = "Read and display TMC2130 registers"
+    def cmd_DUMP_TMC(self, params):
+        self.printer.lookup_object('toolhead').get_last_move_time()
+        gcode = self.printer.lookup_object('gcode')
+        logging.info("DUMP_TMC2130 %s", self.name)
+        for reg, name in sorted(ReadRegisters.items()):
+            self.spi_send_cmd.send([self.oid, [reg, 0x00, 0x00, 0x00, 0x00]])
+            params = self.spi_transfer_cmd.send_with_response(
+                [self.oid, [reg, 0x00, 0x00, 0x00, 0x00]],
+                'spi_transfer_response', self.oid)
+            pr = bytearray(params['response'])
+            val = (pr[1] << 24) | (pr[2] << 16) | (pr[3] << 8) | pr[4]
+            msg = "%15s: %8x" % (name, val)
+            logging.info(msg)
+            gcode.respond_info(msg)
 
 # Endstop wrapper that enables tmc2130 "sensorless homing"
 class TMC2130VirtualEndstop:
