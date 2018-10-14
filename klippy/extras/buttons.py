@@ -46,7 +46,7 @@ class MCU_buttons:
     def __init__(self, printer, mcu):
         self.reactor = printer.get_reactor()
         self.mcu = mcu
-        mcu.add_config_object(self)
+        self.mcu.register_config_callback(self.build_config)
         self.pin_list = []
         self.callbacks = []
         self.invert = self.last_button = 0
@@ -141,7 +141,7 @@ class PrinterButtons:
         mcu = mcu_name = None
         pin_params_list = []
         for pin in pins:
-            pin_params = ppins.lookup_pin('digital_in', pin)
+            pin_params = ppins.lookup_pin(pin, can_invert=True, can_pullup=True)
             if mcu is not None and pin_params['chip'] != mcu:
                 raise ppins.error("button pins must be on same mcu")
             mcu = pin_params['chip']

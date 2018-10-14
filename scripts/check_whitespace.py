@@ -4,15 +4,16 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os.path
+import sys, os.path, unicodedata
 
 HaveError = False
 
 def report_error(filename, lineno, msg):
     global HaveError
+    if not HaveError:
+        sys.stderr.write("\n\nERROR:\nERROR: White space errors\nERROR:\n")
     HaveError = True
-    sys.stderr.write("Whitespace error in file %s on line %d: %s\n" % (
-        filename, lineno + 1, msg))
+    sys.stderr.write("%s:%d: %s\n" % (filename, lineno + 1, msg))
 
 def check_file(filename):
     # Open and read file
@@ -28,12 +29,17 @@ def check_file(filename):
     # Do checks
     lineno = 0
     for lineno, line in enumerate(data.split('\n')):
+        # Verify line is valid utf-8
+        try:
+            line = line.decode('utf-8')
+        except UnicodeDecodeError:
+            report_error(filename, lineno, "Found non utf-8 character")
+            continue
         # Check for control characters
         for c in line:
-            oc = ord(c)
-            if oc < 32:
+            if unicodedata.category(c).startswith('C'):
                 char_name = repr(c)
-                if oc == 9:
+                if c == '\t':
                     if os.path.basename(filename).lower() == 'makefile':
                         continue
                     char_name = 'tab'
@@ -42,7 +48,7 @@ def check_file(filename):
                 break
         # Check for trailing space
         if line.endswith(' '):
-            report_error(filename, lineno, "Trailing space")
+            report_error(filename, lineno, "Line has trailing spaces")
     if not data.endswith('\n'):
         report_error(filename, lineno, "No newline at end of file")
     if data.endswith('\n\n'):
@@ -53,6 +59,7 @@ def main():
     for filename in files:
         check_file(filename)
     if HaveError:
+        sys.stderr.write("\n\n")
         sys.exit(-1)
 
 if __name__ == '__main__':
