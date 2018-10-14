@@ -6,7 +6,7 @@ CROSS_PREFIX=arm-none-eabi-
 dirs-y += src/sam3x8e src/generic
 dirs-y += lib/sam3x/gcc/gcc
 
-CFLAGS += -mthumb -mcpu=cortex-m3
+CFLAGS += -mthumb -mcpu=cortex-m3 -falign-loops=16
 CFLAGS += -Ilib/sam3x/include -Ilib/cmsis-core
 CFLAGS += -D__SAM3X8E__
 
@@ -29,7 +29,13 @@ $(OUT)klipper.bin: $(OUT)klipper.elf
 	@echo "  Creating hex file $@"
 	$(Q)$(OBJCOPY) -O binary $< $@
 
-flash: $(OUT)klipper.bin
+# Flash rules
+lib/bossac/bin/bossac:
+	@echo "  Building bossac"
+	$(Q)make -C lib/bossac bin/bossac
+
+flash: $(OUT)klipper.bin lib/bossac/bin/bossac
 	@echo "  Flashing $^ to $(FLASH_DEVICE) via bossac"
-	$(Q)stty -F "$(FLASH_DEVICE)" 1200
-	$(Q)bossac -i -p "$(FLASH_DEVICE:/dev/%=%)" -R -e -w -v -b $(OUT)klipper.bin
+	$(Q)if [ -z $(FLASH_DEVICE) ]; then echo "Please specify FLASH_DEVICE"; exit 1; fi
+	$(Q)lib/bossac/bin/bossac -U -p "$(FLASH_DEVICE)" -a -e -w $(OUT)klipper.bin -v -b
+	$(Q)lib/bossac/bin/bossac -p "$(FLASH_DEVICE)" -R

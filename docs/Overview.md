@@ -10,7 +10,9 @@ settings in the config file.
 
 The Klipper configuration is stored in a simple text file on the host
 machine. The [config/example.cfg](../config/example.cfg) file serves
-as a reference for the config file. The
+as a reference for the config file. See the
+[Delta Calibrate](Delta_Calibrate.md) document for information on
+calibrating delta printers. The
 [Pressure Advance](Pressure_Advance.md) document contains information
 on tuning the pressure advance config.
 
@@ -38,5 +40,6 @@ protocol between host and micro-controller. See also
 commands implemented in the micro-controller software.
 
 See [debugging](Debugging.md) for information on how to test and debug
-Klipper. See [bootloaders](Bootloaders.md) for developer information
-on micro-controller flashing.
+Klipper. See [stm32f1](stm32f1.md) for information on the STM32F1
+micro-controller port. See [bootloaders](Bootloaders.md) for developer
+information on micro-controller flashing.

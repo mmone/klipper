@@ -21,8 +21,11 @@ class Move:
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-        if not move_d:
+        if move_d < .000000001:
             # Extrude only move
+            self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
+                            end_pos[3])
+            axes_d[0] = axes_d[1] = axes_d[2] = 0.
             self.move_d = move_d = abs(axes_d[3])
             self.is_kinematic_move = False
         self.min_move_t = move_d / speed
@@ -184,9 +187,7 @@ class MoveQueue:
         move.calc_junction(self.queue[-2])
         self.junction_flush -= move.min_move_t
         if self.junction_flush <= 0.:
-            # There are enough queued moves to return to zero velocity
-            # from the first move's maximum possible velocity, so at
-            # least one move can be flushed.
+            # Enough moves have been queued to reach the target flush time.
             self.flush(lazy=True)
 
 STALL_TIME = 0.100
@@ -196,7 +197,8 @@ class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.all_mcus = self.printer.lookup_module_objects('mcu')
+        self.all_mcus = [
+            m for n, m in self.printer.lookup_objects(module='mcu')]
         self.mcu = self.all_mcus[0]
         self.move_queue = MoveQueue()
         self.commanded_pos = [0., 0., 0., 0.]
@@ -205,8 +207,7 @@ class ToolHead:
         self.max_accel = config.getfloat('max_accel', above=0.)
         self.requested_accel_to_decel = config.getfloat(
             'max_accel_to_decel', self.max_accel * 0.5, above=0.)
-        self.max_accel_to_decel = min(self.requested_accel_to_decel,
-                                      self.max_accel)
+        self.max_accel_to_decel = self.requested_accel_to_decel
         self.square_corner_velocity = config.getfloat(
             'square_corner_velocity', 5., minval=0.)
         self.config_max_velocity = self.max_velocity
@@ -232,6 +233,7 @@ class ToolHead:
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.move_queue.set_flush_time(self.buffer_time_high)
         self.printer.try_load_module(config, "idle_timeout")
+        self.printer.try_load_module(config, "statistics")
         # Setup iterative solver
         ffi_main, ffi_lib = chelper.get_ffi()
         self.cmove = ffi_main.gc(ffi_lib.move_alloc(), ffi_lib.free)
@@ -243,6 +245,10 @@ class ToolHead:
         try:
             mod = importlib.import_module('kinematics.' + kin_name)
             self.kin = mod.load_kinematics(self, config)
+        except config.error as e:
+            raise
+        except self.printer.lookup_object('pins').error as e:
+            raise
         except:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
@@ -340,7 +346,7 @@ class ToolHead:
             self.kin.check_move(move)
         if move.axes_d[3]:
             self.extruder.check_move(move)
-        self.commanded_pos[:] = newpos
+        self.commanded_pos[:] = move.end_pos
         self.move_queue.add_move(move)
         if self.print_time > self.need_check_stall:
             self._check_stall()
@@ -414,6 +420,8 @@ class ToolHead:
     def _calc_junction_deviation(self):
         scv2 = self.square_corner_velocity**2
         self.junction_deviation = scv2 * (math.sqrt(2.) - 1.) / self.max_accel
+        self.max_accel_to_decel = min(self.requested_accel_to_decel,
+                                      self.max_accel)
     cmd_SET_VELOCITY_LIMIT_help = "Set printer velocity limits"
     def cmd_SET_VELOCITY_LIMIT(self, params):
         print_time = self.get_last_move_time()
@@ -431,7 +439,6 @@ class ToolHead:
             'ACCEL_TO_DECEL', params, self.requested_accel_to_decel, above=0.)
         self.max_velocity = max_velocity
         self.max_accel = max_accel
-        self.max_accel_to_decel = min(self.requested_accel_to_decel, max_accel)
         self.square_corner_velocity = square_corner_velocity
         self._calc_junction_deviation()
         msg = ("max_velocity: %.6f\n"
@@ -444,7 +451,13 @@ class ToolHead:
         gcode.respond_info(msg)
     def cmd_M204(self, params):
         gcode = self.printer.lookup_object('gcode')
-        accel = gcode.get_float('S', params, above=0.)
+        if 'P' in params and 'T' in params and 'S' not in params:
+            # Use minimum of P and T for accel
+            accel = min(gcode.get_float('P', params, above=0.),
+                        gcode.get_float('T', params, above=0.))
+        else:
+            # Use S for accel
+            accel = gcode.get_float('S', params, above=0.)
         self.max_accel = min(accel, self.config_max_accel)
         self._calc_junction_deviation()
 

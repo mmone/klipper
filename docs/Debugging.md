@@ -282,11 +282,27 @@ config_stepper oid=2 step_pin=PA21 dir_pin=PC30 min_stop_interval=0 invert_step=
 finalize_config crc=0
 ```
 
-The test was last run on commit `d8225642` with gcc version
-`arm-none-eabi-gcc (4.8.4-1+11-1) 4.8.4 20141219 (release)`. The best
-single stepper result is `SET ticks 249`, the best dual stepper result
-is `SET ticks 220`, and the best three stepper result is `SET ticks
-374`.
+The test was last run on commit `67278a6d` with gcc version
+`arm-none-eabi-gcc (Fedora 7.1.0-5.fc27) 7.1.0`. The best single
+stepper result is `SET ticks 250`, the best dual stepper result is
+`SET ticks 205`, and the best three stepper result is `SET ticks 317`.
+
+### Duet Wifi step rate benchmark ###
+
+The following configuration sequence is used on the Duet Wifi:
+```
+allocate_oids count=3
+config_stepper oid=0 step_pin=PD6 dir_pin=PD11 min_stop_interval=0 invert_step=0
+config_stepper oid=1 step_pin=PD7 dir_pin=PD12 min_stop_interval=0 invert_step=0
+config_stepper oid=2 step_pin=PD8 dir_pin=PD13 min_stop_interval=0 invert_step=0
+finalize_config crc=0
+```
+
+The test was last run on commit `e94f3b7` with gcc version
+`arm-none-eabi-gcc (15:5.4.1+svn241155-1) 5.4.1 20160919`. The best
+single stepper result is `SET ticks 325`, the best dual stepper result
+is `SET ticks 283`, and the best three stepper result is `SET ticks
+379`.
 
 ### Beaglebone PRU step rate benchmark ###
 
@@ -315,10 +331,10 @@ config_stepper oid=2 step_pin=PA4 dir_pin=PB7 min_stop_interval=0 invert_step=0
 finalize_config crc=0
 ```
 
-The test was last run on commit `add37023` with gcc version
+The test was last run on commit `7cbc44b8` with gcc version
 `arm-none-eabi-gcc (Fedora 7.1.0-5.fc27) 7.1.0`. The best single
 stepper result is `SET ticks 44`, the best dual stepper result is `SET
-ticks 47`, and the best three stepper result is `SET ticks 80`.
+ticks 44`, and the best three stepper result is `SET ticks 74`.
 
 ### LPC176x step rate benchmark ###
 
