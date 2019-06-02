@@ -1,269 +1,305 @@
 # TMC2660 configuration
 #
-# Copyright (C) 2018  Florian Heilmann <Florian.Heilmann@gmx.net>
+# Copyright (C) 2018-2019  Florian Heilmann <Florian.Heilmann@gmx.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import math, collections, logging
+import bus, tmc2130
 
-CURRENT_MAX = 2.4
-CURRENT_MIN = 0.1
+def current_bits(current, sense_resistor, vsense_on):
+    vsense = 0.165 if vsense_on else 0.310
+    cs = int(32 * current * sense_resistor * math.sqrt(2.) / vsense - 1. + .5)
+    return max(0, min(cs, 31))
 
-REG_DRVCONF = 0xe << 16
-REG_SGCSCONF = 0xc  << 16
-REG_SMARTEN = 0xa  << 16
-REG_CHOPCONF = 0x8  << 16
-REG_DRVCTRL = 0x0  << 16
+def get_config_current(run_current, sense_resistor):
+    vsense = False
+    cs = current_bits(run_current, sense_resistor, vsense)
+    if cs < 16:
+        vsense = True
+        cs = current_bits(run_current, sense_resistor, vsense)
+    return cs, vsense
 
-def get_bits(reg, field, value):
-    return ((value << reg[field][0]) & reg[field][1])
-
-def read_field(bits, reg, field):
-    return (bits & reg[field][1]) >> reg[field][0]
-
-def current_to_reg(current):
-    current_constrained = min(CURRENT_MAX, max(CURRENT_MIN, current))
-    return int((32 * 1000 * current_constrained - 1600)/3236) # Taken from RRF
-
-DRVCTRL = {
-    "INTPOL" : (9, 0x00100),
-    "DEDGE"  : (8, 0x00080),
-    "MRES"   : (0, 0x0000F)
+Registers = {
+    "DRVCONF": 0xE, "SGCSCONF": 0xC, "SMARTEN": 0xA,
+    "CHOPCONF": 0x8, "DRVCTRL": 0x0
 }
 
-CHOPCONF = {
-    "TBL"   : (15, 0x18000),
-    "CHM"   : (14, 0x04000),
-    "RNDTF" : (13, 0x02000),
-    "HDEC"  : (11, 0x01800),
-    "HEND"  : (7,  0x00780),
-    "HSTRT" : (4,  0x00070),
-    "TOFF"  : (0,  0x0000F)
+Fields = {}
+
+Fields["DRVCTRL"] = {
+    "MRES": 0x0f,
+    "DEDGE": 0x01 << 8,
+    "INTPOL": 0x01 << 9,
 }
 
-SMARTEN = {
-    "SEIMIN" : (15, 0x08000),
-    "SEDN"   : (14, 0x06000),
-    "SEMAX"  : (8,  0x00F00),
-    "SEUP"   : (5,  0x00060),
-    "SEMIN"  : (0,  0x0000F)
+Fields["CHOPCONF"] = {
+    "TOFF": 0x0f,
+    "HSTRT": 0x7 << 4,
+    "HEND": 0x0f << 7,
+    "HDEC": 0x03 << 11,
+    "RNDTF": 0x01 << 13,
+    "CHM": 0x01 << 14,
+    "TBL": 0x03 << 15
 }
 
-SGCSCONF = {
-    "SFILT"  : (16, 0x10000),
-    "SGT"    : (8,  0x07800),
-    "CS"     : (0,  0x0001F)
+Fields["SMARTEN"] = {
+    "SEMIN" : 0x0f,
+    "SEUP": 0x03 << 5,
+    "SEMAX": 0x0f << 8,
+    "SEDN": 0x03 << 13,
+    "SEIMIN": 0x01 << 15
 }
 
-DRVCONF = {
-    "TST"    : (16, 0x10000),
-    "SLPH"   : (14, 0x0C000),
-    "SLPL"   : (12, 0x03000),
-    "DISS2G" : (10, 0x00400),
-    "TS2G"   : (8,  0x00300),
-    "SDOFF"  : (7,  0x00080),
-    "VSENSE" : (6,  0x00040),
-    "RDSEL"  : (4,  0x00030)
+Fields["SGCSCONF"] = {
+    "CS": 0x1f,
+    "SGT": 0x7F << 8,
+    "SFILT": 0x01 << 16
 }
 
-READRSP = {
-    "MSTEP" : (10, 0xFFC00),
-    "STST"  : (7,  0x00080),
-    "OLB"   : (6,  0x00040),
-    "OLA"   : (5,  0x00020),
-    "S2GB"  : (4,  0x00010),
-    "S2GA"  : (3,  0x00008),
-    "OTPW"  : (2,  0x00004),
-    "OT"    : (1,  0x00002),
-    "SG"    : (0,  0x00001)
+Fields["DRVCONF"] = {
+    "RDSEL": 0x03 << 4,
+    "VSENSE": 0x01 << 6,
+    "SDOFF": 0x01 << 7,
+    "TS2G": 0x03 << 8,
+    "DISS2G": 0x01 << 10,
+    "SLPL": 0x03 << 12,
+    "SLPH": 0x03 << 14,
+    "TST": 0x01 << 16
+}
+
+Fields["READRSP@RDSEL0"] = {
+    "SG": 0x01,
+    "OT": 0x01 << 1,
+    "OTPW": 0x01 << 2,
+    "S2GA": 0x01 << 3,
+    "S2GB": 0x01 << 4,
+    "OLA": 0x01 << 5,
+    "OLB": 0x01 << 6,
+    "STST": 0x01 << 7,
+    "MSTEP": 0x3ff << 10
+}
+
+Fields["READRSP@RDSEL1"] = {
+    "SG": 0x01,
+    "OT": 0x01 << 1,
+    "OTPW": 0x01 << 2,
+    "S2GA": 0x01 << 3,
+    "S2GB": 0x01 << 4,
+    "OLA": 0x01 << 5,
+    "OLB": 0x01 << 6,
+    "STST": 0x01 << 7,
+    "SG@RDSEL1": 0x3ff << 10
+}
+
+Fields["READRSP@RDSEL2"] = {
+    "SG": 0x01,
+    "OT": 0x01 << 1,
+    "OTPW": 0x01 << 2,
+    "S2GA": 0x01 << 3,
+    "S2GB": 0x01 << 4,
+    "OLA": 0x01 << 5,
+    "OLB": 0x01 << 6,
+    "STST": 0x01 << 7,
+    "SG@RDSEL2": 0x1f << 15,
+    "SE": 0x1f << 10
+}
+
+SignedFields = ["SGT"]
+
+FieldFormatters = {
+    "MRES": (lambda v: "%d(%dusteps)" % (v, 0x100 >> v)),
+    "DEDGE": (lambda v:
+        "1(Both Edges Active)" if v else "0(Only Rising Edge active)"),
+    "INTPOL": (lambda v: "1(On)" if v else "0(Off)"),
+    "TOFF": (lambda v: ("%d" % v) if v else "0(Driver Disabled!)"),
+    "CHM": (lambda v: "1(constant toff)" if v else "0(spreadCycle)"),
+    "SFILT": (lambda v: "1(Filtered mode)" if v else "0(Standard mode)"),
+    "VSENSE": (lambda v: "%d(%dmV)" % (v, 165 if v else 305)),
+    "SDOFF": (lambda v: "1(Step/Dir disabled" if v else "0(Step/dir enabled)"),
+    "DISS2G": (lambda v: "%d(Short to GND protection %s)" % (v,
+                                          "disabled" if v else "enabled")),
+    "MSTEP": (lambda v: "%d(%d, OA1 %s OA2)" % (v, v & 0xff,
+                                                "<=" if v & 0x100 else "=>")),
+    "SG": (lambda v: "%d(%s)" % (v, "Stall!" if v else "No Stall!")),
+    "OT": (lambda v: "1(Overtemp shutdown!)" if v else ""),
+    "OTPW": (lambda v: "1(Overtemp warning!)" if v else ""),
+    "S2GA": (lambda v: "1(Short to GND Coil A!)" if v else ""),
+    "S2GB": (lambda v: "1(Short to GND Coil B!)" if v else ""),
+    "OLA": (lambda v: "1(Open Load Coil A at slow speed!)" if v else ""),
+    "OLB": (lambda v: "1(Open Load Coil B at slow speed!)" if v else ""),
+    "STST": (lambda v: "1(Standstill detected!)" if v else ""),
 }
 
 class TMC2660:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[1]
-        self.toolhead = None
-
-        # pin setup
-        ppins = self.printer.lookup_object("pins")
-        cs_pin = config.get('cs_pin')
-        cs_pin_params = ppins.lookup_pin(cs_pin)
-        self.mcu = cs_pin_params['chip']
-        if cs_pin_params['invert']:
-            raise pins.error("tmc2660 can not invert pin")
-        pin = cs_pin_params['pin']
-        self.oid = self.mcu.create_oid()
-        # Add SET_CURRENT command
+        self.spi = bus.MCU_SPI_from_config(config, 0, default_speed=4000000)
+        # Add SET_CURRENT and DUMP_TMC commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_mux_command(
             "SET_TMC_CURRENT", "STEPPER", self.name,
             self.cmd_SET_TMC_CURRENT, desc=self.cmd_SET_TMC_CURRENT_help)
+        gcode.register_mux_command(
+            "DUMP_TMC", "STEPPER", self.name,
+            self.cmd_DUMP_TMC, desc=self.cmd_DUMP_TMC_help)
+        gcode.register_mux_command(
+            "SET_TMC_FIELD", "STEPPER", self.name,
+            self.cmd_SET_TMC_FIELD, desc=self.cmd_SET_TMC_FIELD_help)
+        gcode.register_mux_command(
+            "INIT_TMC", "STEPPER", self.name,
+            self.cmd_INIT_TMC, desc=self.cmd_INIT_TMC_help)
         # Setup driver registers
-        self.bus = config.getint('bus', minval=0, maxval=3)
-        self.freq = config.getint('freq', default=2000000, minval=1000000, maxval=4000000)
-        self.mcu.add_config_cmd(
-            "config_spi oid=%d bus=%d pin=%s mode=%d rate=%d shutdown_msg=" % (
-                self.oid, self.bus, cs_pin_params['pin'], 0, self.freq))
+        self.regs = collections.OrderedDict()
+        self.fields = tmc2130.FieldHelper(Fields, SignedFields, FieldFormatters,
+                                          self.regs)
+        set_config_field = self.fields.set_config_field
 
-        self.spi_send_cmd = self.spi_transfer_cmd = None
-        self.mcu.register_config_callback(self.build_config)
-
-        self.idle_current_percentage = config.getint('idle_current_percent', default=30, minval=0, maxval=100)
-        self.idle_timeout = config.getfloat('idle_timeout', default=0., minval=0)
-        self.is_idle = False
         # DRVCTRL
         steps = {'256': 0, '128': 1, '64': 2, '32': 3, '16': 4,
                  '8': 5, '4': 6, '2': 7, '1': 8}
         self.driver_mres = config.getchoice('microsteps', steps)
-        self.driver_intpol = config.getboolean('interpolate', default=True)
-        self.current = config.getfloat('run_current',  minval=CURRENT_MIN, maxval=CURRENT_MAX)
-        self.driver_dedge = config.getboolean('driver_DEDGE', default=False)
-
+        self.fields.set_field("MRES", self.driver_mres)
+        set_config_field(config, "DEDGE", 0)
+        set_config_field(config, "INTPOL", True, 'interpolate')
         # CHOPCONF
-        btime = {'16': 0, '24': 1, '36': 2, '54': 3}
-        self.driver_tbl = config.getchoice('driver_TBL', btime, default='36')
-        chm = {'spreadcycle': 0, 'constant_toff': 1}
-        self.driver_chm = config.getchoice('driver_CHM', chm, default='spreadcycle')
-        self.driver_rndtf = config.getboolean('driver_RNDTF', False)
-        if (self.driver_chm):
-            self.driver_hend = config.getint('driver_HEND', default=7, minval=-3, maxval=12) + 3
-            self.driver_hstrt = config.getint('driver_HSTRT', default=5, minval=0, maxval=15)
-            self.driver_toff = config.getint('driver_TOFF', default=7, minval=0, maxval=15)
-            self.driver_hdec = config.getboolean('driver_HDEC', default=False) | ((self.hstrt & 0x8) >> 1) # if chm is 1, HDEC1 is the MSB of HSTRT
-        else:
-            self.driver_hdec = config.getboolean('driver_HDEC', default=False)
-            self.driver_hend = config.getint('driver_HEND', default=3, minval=-3, maxval=12) + 3
-            self.driver_hstrt = config.getint('driver_HSTRT', default=4, minval=1, maxval=8) - 1
-            self.driver_toff = config.getint('driver_TOFF', default=4, minval=0, maxval=15)
-            if (self.driver_hstrt + self.driver_hend > 15):
-                raise pins.error("driver_HEND + HSTRT must be <= 15")
-
+        set_config_field(config, "TBL", 2)
+        set_config_field(config, "RNDTF", 0)
+        set_config_field(config, "HDEC", 0)
+        set_config_field(config, "CHM", 0)
+        set_config_field(config, "HEND", 3)
+        set_config_field(config, "HSTRT", 3)
+        set_config_field(config, "TOFF", 4)
+        if not self.fields.get_field("CHM"):
+            if (self.fields.get_field("HSTRT") +
+                self.fields.get_field("HEND")) > 15:
+                raise config.error("driver_HEND + driver_HSTRT must be <= 15")
         # SMARTEN
-        csc = {'quarter': 1, 'half': 0}
-        self.driver_seimin = config.getchoice('driver_SEIMIN', csc, default='half')
-        cds = {'32': 0, '8': 1, '2': 2, '1': 3}
-        self.driver_sedn = config.getchoice('driver_SEDN', cds, default='32')
-        self.driver_semax = config.getint('driver_SEMAX', default=0, minval=0, maxval=15)
-        cis = {'1': 0, '2': 1, '4': 2, '8': 3}
-        self.driver_seup = config.getchoice('driver_SEUP', cis, default='1')
-        self.driver_semin = config.getint('driver_SEMIN', default=0, minval=0, maxval=15)
+        set_config_field(config, "SEIMIN", 0)
+        set_config_field(config, "SEDN", 0)
+        set_config_field(config, "SEMAX", 0)
+        set_config_field(config, "SEUP", 0)
+        set_config_field(config, "SEMIN", 0)
 
         # SGSCONF
-        self.driver_sfilt = config.getboolean('driver_SFILT', default=True)
-        self.driver_sgt = config.getint('driver_sgt', default=-64, minval=-64, maxval=63) + 64
-        self.driver_cs = current_to_reg(self.current)
+        set_config_field(config, "SFILT", 1)
+        set_config_field(config, "SGT", 0)
+        self.current = config.getfloat('run_current', minval=0.1,
+                                       maxval=2.4)
+        self.sense_resistor = config.getfloat('sense_resistor')
+        (self.driver_cs,
+         self.driver_vsense) = get_config_current(self.current,
+                                                  self.sense_resistor)
+        self.fields.set_field("CS", self.driver_cs)
 
         # DRVCONF
-        slph = {'min': 0, 'min_tc': 1, 'med_tc': 2, 'max': 3}
-        self.driver_slph = config.getchoice('driver_SLPH', slph, default='min')
-        slpl = {'min': 0, 'med': 2, 'max': 3}
-        self.driver_slpl = config.getchoice('driver_SLPL', slpl, default='min')
-        self.driver_diss2g = config.getboolean('driver_DISS2G', default=False)
-        ts2g = {'3.2': 0, '1.6': 1, '1.2': 2, '0.8': 3}
-        self.driver_ts2g = config.getchoice('driver_TS2G', ts2g, default='0.8')
-        self.driver_sdoff = False # since we don't support SPI mode yet, this has to be False
-        vsense = {'low': 0, 'high': 1}
-        self.driver_vsense = config.getchoice('driver_VSENSE', vsense, default='high')
-        self.driver_rdsel = 2  # stallguard2 and coolstep current level
+        set_config_field(config, "SLPH", 0)
+        set_config_field(config, "SLPL", 0)
+        set_config_field(config, "DISS2G", 0)
+        set_config_field(config, "TS2G", 3)
+        self.fields.set_field("VSENSE", self.driver_vsense)
+        self.fields.set_field("RDSEL", 0) # needed for phase calculations
+        self.fields.set_field("SDOFF", 0) # only step/dir mode supported
 
+        # Init Registers
+        self._init_registers(self)
 
-        # Build and send registers
-        self.reg_drvconf =  REG_DRVCONF | \
-                            get_bits(DRVCONF, "TST", 0) | \
-                            get_bits(DRVCONF, "SLPH", self.driver_slph) | \
-                            get_bits(DRVCONF, "SLPL", self.driver_slpl) | \
-                            get_bits(DRVCONF, "DISS2G", self.driver_diss2g) | \
-                            get_bits(DRVCONF, "TS2G", self.driver_ts2g) | \
-                            get_bits(DRVCONF, "SDOFF", self.driver_sdoff) | \
-                            get_bits(DRVCONF, "VSENSE", self.driver_vsense) | \
-                            get_bits(DRVCONF, "RDSEL", self.driver_rdsel)
-        self.add_config_cmd(self.reg_drvconf)
+        # Register ready/printing handlers
+        self.idle_current_percentage = config.getint(
+            'idle_current_percent', default=100, minval=0, maxval=100)
+        if self.idle_current_percentage < 100:
+            self.printer.register_event_handler("idle_timeout:printing",
+                                                self.handle_printing)
+            self.printer.register_event_handler("idle_timeout:ready",
+                                                self.handle_ready)
 
-        self.reg_drvctrl = REG_DRVCTRL | \
-                           get_bits(DRVCTRL, "INTPOL", self.driver_intpol) | \
-                           get_bits(DRVCTRL, "DEDGE", self.driver_dedge) | \
-                           get_bits(DRVCTRL, "MRES", self.driver_mres)
-        self.add_config_cmd(self.reg_drvctrl)
+    def _init_registers(self, min_clock=0):
+        for reg_name in Registers:
+            self.set_register(reg_name, self.regs[reg_name])
 
-        self.reg_chopconf = REG_CHOPCONF | \
-                            get_bits(CHOPCONF, "TBL", self.driver_tbl) | \
-                            get_bits(CHOPCONF, "CHM", self.driver_chm) | \
-                            get_bits(CHOPCONF, "RNDTF", self.driver_rndtf) | \
-                            get_bits(CHOPCONF, "HDEC", self.driver_hdec) | \
-                            get_bits(CHOPCONF, "HEND", self.driver_hend) | \
-                            get_bits(CHOPCONF, "HSTRT", self.driver_hstrt) | \
-                            get_bits(CHOPCONF, "TOFF", self.driver_toff)
-        self.add_config_cmd(self.reg_chopconf)
+    def set_register(self, reg_name, val, min_clock=0):
+        reg = Registers[reg_name]
+        self.spi.spi_send([((val >> 16) | reg) & 0xff,
+                            (val >> 8) & 0xff, val & 0xff], min_clock)
 
-        self.reg_sgcsconf = REG_SGCSCONF | \
-                            get_bits(SGCSCONF, "SFILT", self.driver_sfilt) | \
-                            get_bits(SGCSCONF, "SGT", self.driver_sgt) | \
-                            get_bits(SGCSCONF, "CS", self.driver_cs)
-        self.add_config_cmd(self.reg_sgcsconf)
+    def get_response(self):
+        reg = Registers["DRVCTRL"]
+        val = self.regs["DRVCTRL"]
+        params = self.spi.spi_transfer([((val >> 16) | reg) & 0xff,
+                            (val >> 8) & 0xff, val & 0xff])
+        pr = bytearray(params['response'])
+        return (pr[0] << 16) | (pr[1] << 8) | pr[2]
 
-        self.reg_smarten = REG_SMARTEN | \
-                           get_bits(SMARTEN, "SEIMIN", self.driver_seimin) | \
-                           get_bits(SMARTEN, "SEDN", self.driver_sedn) | \
-                           get_bits(SMARTEN, "SEMAX", self.driver_semax) | \
-                           get_bits(SMARTEN, "SEUP", self.driver_seup) | \
-                           get_bits(SMARTEN, "SEMIN", self.driver_semin)
-        self.add_config_cmd(self.reg_smarten)
+    def get_microsteps(self):
+        return 256 >> self.fields.get_field("MRES")
 
-    def add_config_cmd(self, val):
-        self.mcu.add_config_cmd("spi_send oid=%d data=%06x" % (
-            self.oid, val & 0xffffff))
+    def get_phase(self):
+        mscnt =  self.fields.get_field("MSTEP", self.get_response())
+        return mscnt >> self.driver_mres
 
-    def build_config(self):
-        cmd_queue = self.mcu.alloc_command_queue()
-        self.spi_send_cmd = self.mcu.lookup_command(
-            "spi_send oid=%c data=%*s", cq=cmd_queue)
-        self.spi_transfer_cmd = self.mcu.lookup_command(
-            "spi_transfer oid=%c data=%*s", cq=cmd_queue)
+    def handle_printing(self, print_time):
+        self.set_current(0., self.current) # workaround
 
-    # register timeout handler which will lower the current to current * idle_current_percent / 100 after idle_timeout seconds
-    # and raise it back to current if the printer needs to move the steppers
-    def printer_state(self, state):
-        if state == 'ready' and self.idle_timeout > 0:
-            self.toolhead = self.printer.lookup_object('toolhead')
-            reactor = self.printer.get_reactor()
-            reactor.register_timer(self.idle_timeout_handler, reactor.NOW)
+    def handle_ready(self, print_time):
+        self.set_current(print_time, (float(self.idle_current_percentage)
+                                      * self.current / 100))
 
-    # timeout handler to lower/raise current when entering/leaving the idle state
-    def idle_timeout_handler(self, eventtime):
-        info = self.toolhead.get_status(eventtime)
-        status = info['status']
-        print_time = info['print_time']
-        if status == 'Printing':
-            if self.is_idle:
-                self.set_current(self.current)
-                self.is_idle = False
-            return eventtime + self.idle_timeout
-        estimated_print_time = info['estimated_print_time']
-        elapsed_time = estimated_print_time - print_time
-        if elapsed_time < self.idle_timeout:
-            if self.is_idle:
-                self.set_current(self.current)
-                self.is_idle = False
-            return eventtime + self.idle_timeout - elapsed_time
-        if not self.is_idle:
-            self.set_current(float(self.idle_current_percentage) * self.current / 100)
-            self.is_idle = True
-        return eventtime + 0.1
+    def set_current(self, print_time, current):
+        (self.driver_cs,
+         self.driver_vsense) = get_config_current(current, self.sense_resistor)
+        self.fields.set_field("CS", self.driver_cs)
+        clock = self.spi.get_mcu().print_time_to_clock(print_time)
+        self.set_register("SGCSCONF", self.regs["SGCSCONF"], min_clock=clock)
+        # Only update VSENSE if we need to
+        if self.driver_vsense != self.fields.get_field("VSENSE"):
+            self.fields.set_field("VSENSE", self.driver_vsense)
+            self.set_register("DRVCONF", self.regs["DRVCONF"], min_clock=clock)
 
-    def set_current(self, current):
-        self.driver_cs = current_to_reg(current)
-        reg = self.reg_sgcsconf
-        reg &= ~(SGCSCONF["CS"][1])
-        reg |= get_bits(SGCSCONF, "CS", self.driver_cs)
-        reg_data = [(reg >> 16) & 0xff, (reg >> 8) & 0xff, reg & 0xff]
-        params = self.spi_transfer_cmd.send_with_response([self.oid, reg_data], 'spi_transfer_response', self.oid)
-
-    cmd_SET_TMC_CURRENT_help = "Set the current of a TMC2660 driver (between %d and %d)" % (CURRENT_MIN, CURRENT_MAX)
+    cmd_SET_TMC_CURRENT_help = "Set the current of a TMC2660 driver"
     def cmd_SET_TMC_CURRENT(self, params):
-        self.printer.lookup_object('toolhead').get_last_move_time()
         gcode = self.printer.lookup_object('gcode')
         if 'CURRENT' in params:
-            self.current = gcode.get_float('CURRENT', params, minval=CURRENT_MIN, maxval=CURRENT_MAX)
-            if not self.is_idle:
-                self.set_current(self.current)
+            self.current = gcode.get_float(
+                'CURRENT', params, minval=0.1, maxval=2.4)
+            self.set_current(
+                self.printer.lookup_object('toolhead').get_last_move_time(),
+                self.current)
+
+    cmd_DUMP_TMC_help = "Read and display TMC stepper driver registers"
+    def cmd_DUMP_TMC(self, params):
+        self.printer.lookup_object('toolhead').get_last_move_time()
+        gcode = self.printer.lookup_object('gcode')
+        gcode.respond_info("========== Write-only registers ==========")
+        for reg_name in Registers:
+            msg = self.fields.pretty_format(reg_name, self.regs[reg_name])
+            gcode.respond_info(msg)
+
+        # Send one register to get the return data
+        gcode.respond_info("========== Queried registers ==========")
+        return_format = "READRSP@RDSEL" + str(self.fields.get_field("RDSEL"))
+        msg = self.fields.pretty_format(return_format, self.get_response())
+        gcode.respond_info(msg)
+
+    cmd_INIT_TMC_help = "Initialize TMC stepper driver registers"
+    def cmd_INIT_TMC(self, params):
+        logging.info("INIT_TMC 2660 %s", self.name)
+        pt = self.printer.lookup_object('toolhead').get_last_move_time()
+        min_clock = self.spi.get_mcu().print_time_to_clock(pt)
+        self._init_registers(min_clock)
+
+    cmd_SET_TMC_FIELD_help = "Set a register field of a TMC2660 driver"
+    def cmd_SET_TMC_FIELD(self, params):
+        gcode = self.printer.lookup_object('gcode')
+        if ('FIELD' not in params or
+            'VALUE' not in params):
+            raise gcode.error("Invalid command format")
+        field = gcode.get_str('FIELD', params)
+        reg = self.fields.field_to_register[field]
+        value = gcode.get_int('VALUE', params)
+        self.fields.set_field(field, value)
+        pt = self.printer.lookup_object('toolhead').get_last_move_time()
+        clock = self.spi.get_mcu().print_time_to_clock(pt)
+        self.set_register(reg, self.regs[reg], min_clock=clock)
 
 def load_config_prefix(config):
     return TMC2660(config)

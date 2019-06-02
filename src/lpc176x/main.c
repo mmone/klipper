@@ -7,8 +7,9 @@
 #include "LPC17xx.h" // NVIC_SystemReset
 #include "command.h" // DECL_CONSTANT
 #include "sched.h" // sched_main
+#include "board/misc.h" // timer_read_time
 
-DECL_CONSTANT(MCU, "lpc176x");
+DECL_CONSTANT_STR("MCU", "lpc176x");
 
 
 /****************************************************************
@@ -38,12 +39,47 @@ DECL_INIT(watchdog_init);
  * misc functions
  ****************************************************************/
 
+// Check if a peripheral clock has been enabled
+int
+is_enabled_pclock(uint32_t pclk)
+{
+    return !!(LPC_SC->PCONP & (1<<pclk));
+}
+
+// Enable a peripheral clock
+void
+enable_pclock(uint32_t pclk)
+{
+    LPC_SC->PCONP |= 1<<pclk;
+    if (pclk < 16) {
+        uint32_t shift = pclk * 2;
+        LPC_SC->PCLKSEL0 = (LPC_SC->PCLKSEL0 & ~(0x3<<shift)) | (0x1<<shift);
+    } else {
+        uint32_t shift = (pclk - 16) * 2;
+        LPC_SC->PCLKSEL1 = (LPC_SC->PCLKSEL1 & ~(0x3<<shift)) | (0x1<<shift);
+    }
+}
+
 void
 command_reset(uint32_t *args)
 {
     NVIC_SystemReset();
 }
 DECL_COMMAND_FLAGS(command_reset, HF_IN_SHUTDOWN, "reset");
+
+// Implement simple early-boot delay mechanism
+void
+udelay(uint32_t usecs)
+{
+    if (!(CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk)) {
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    }
+
+    uint32_t end = timer_read_time() + timer_from_us(usecs);
+    while (timer_is_before(timer_read_time(), end))
+        ;
+}
 
 // Main entry point
 int

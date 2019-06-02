@@ -17,6 +17,7 @@ class Move:
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
+        velocity = min(speed, toolhead.max_velocity)
         self.cmove = toolhead.cmove
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
@@ -27,13 +28,15 @@ class Move:
                             end_pos[3])
             axes_d[0] = axes_d[1] = axes_d[2] = 0.
             self.move_d = move_d = abs(axes_d[3])
+            self.accel = 99999999.9
+            velocity = speed
             self.is_kinematic_move = False
-        self.min_move_t = move_d / speed
+        self.min_move_t = move_d / velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
         # can change in this move.
         self.max_start_v2 = 0.
-        self.max_cruise_v2 = speed**2
+        self.max_cruise_v2 = velocity**2
         self.delta_v2 = 2.0 * move_d * self.accel
         self.max_smoothed_v2 = 0.
         self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
@@ -50,9 +53,7 @@ class Move:
             return
         # Allow extruder to calculate its maximum junction
         extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
-        # Find max velocity using approximated centripetal velocity as
-        # described at:
-        # https://onehossshay.wordpress.com/2011/09/24/improving_grbl_cornering_algorithm/
+        # Find max velocity using "approximated centripetal velocity"
         axes_d = self.axes_d
         prev_axes_d = prev_move.axes_d
         junction_cos_theta = -((axes_d[0] * prev_axes_d[0]
@@ -63,7 +64,8 @@ class Move:
             return
         junction_cos_theta = max(junction_cos_theta, -0.999999)
         sin_theta_d2 = math.sqrt(0.5*(1.0-junction_cos_theta))
-        R = self.toolhead.junction_deviation * sin_theta_d2 / (1. - sin_theta_d2)
+        R = (self.toolhead.junction_deviation * sin_theta_d2
+             / (1. - sin_theta_d2))
         tan_theta_d2 = sin_theta_d2 / math.sqrt(0.5*(1.0+junction_cos_theta))
         move_centripetal_v2 = .5 * self.move_d * tan_theta_d2 * self.accel
         prev_move_centripetal_v2 = (.5 * prev_move.move_d * tan_theta_d2
@@ -202,6 +204,10 @@ class ToolHead:
         self.mcu = self.all_mcus[0]
         self.move_queue = MoveQueue()
         self.commanded_pos = [0., 0., 0., 0.]
+        self.printer.register_event_handler("gcode:request_restart",
+                                            self._handle_request_restart)
+        self.printer.register_event_handler("klippy:shutdown",
+                                            self._handle_shutdown)
         # Velocity and acceleration control
         self.max_velocity = config.getfloat('max_velocity', above=0.)
         self.max_accel = config.getfloat('max_accel', above=0.)
@@ -234,6 +240,7 @@ class ToolHead:
         self.move_queue.set_flush_time(self.buffer_time_high)
         self.printer.try_load_module(config, "idle_timeout")
         self.printer.try_load_module(config, "statistics")
+        self.printer.try_load_module(config, "manual_probe")
         # Setup iterative solver
         ffi_main, ffi_lib = chelper.get_ffi()
         self.cmove = ffi_main.gc(ffi_lib.move_alloc(), ffi_lib.free)
@@ -255,7 +262,8 @@ class ToolHead:
             raise config.error(msg)
         # SET_VELOCITY_LIMIT command
         gcode = self.printer.lookup_object('gcode')
-        gcode.register_command('SET_VELOCITY_LIMIT', self.cmd_SET_VELOCITY_LIMIT,
+        gcode.register_command('SET_VELOCITY_LIMIT',
+                               self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
         gcode.register_command('M204', self.cmd_M204)
     # Print time tracking
@@ -264,15 +272,19 @@ class ToolHead:
         flush_to_time = self.print_time - self.move_flush_time
         for m in self.all_mcus:
             m.flush_moves(flush_to_time)
-    def get_next_move_time(self):
-        if not self.sync_print_time:
-            return self.print_time
-        self.sync_print_time = False
-        est_print_time = self.mcu.estimated_print_time(self.reactor.monotonic())
+    def _calc_print_time(self):
+        curtime = self.reactor.monotonic()
+        est_print_time = self.mcu.estimated_print_time(curtime)
         if est_print_time + self.buffer_time_start > self.print_time:
             self.print_time = est_print_time + self.buffer_time_start
             self.last_print_start_time = self.print_time
-        self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
+            self.printer.send_event("toolhead:sync_print_time",
+                                    curtime, est_print_time, self.print_time)
+    def get_next_move_time(self):
+        if self.sync_print_time:
+            self.sync_print_time = False
+            self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
+            self._calc_print_time()
         return self.print_time
     def _flush_lookahead(self, must_sync=False):
         sync_print_time = self.sync_print_time
@@ -287,11 +299,13 @@ class ToolHead:
                 m.flush_moves(self.print_time)
     def get_last_move_time(self):
         self._flush_lookahead()
-        return self.get_next_move_time()
+        if self.sync_print_time:
+            self._calc_print_time()
+        return self.print_time
     def reset_print_time(self, min_print_time=0.):
         self._flush_lookahead(must_sync=True)
-        self.print_time = max(min_print_time, self.mcu.estimated_print_time(
-            self.reactor.monotonic()))
+        est_print_time = self.mcu.estimated_print_time(self.reactor.monotonic())
+        self.print_time = max(min_print_time, est_print_time)
     def _check_stall(self):
         eventtime = self.reactor.monotonic()
         if self.sync_print_time:
@@ -338,7 +352,6 @@ class ToolHead:
         self.commanded_pos[:] = newpos
         self.kin.set_position(newpos, homing_axes)
     def move(self, newpos, speed):
-        speed = min(speed, self.max_velocity)
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
@@ -361,6 +374,7 @@ class ToolHead:
         self.kin.motor_off(last_move_time)
         for ext in kinematics.extruder.get_printer_extruders(self.printer):
             ext.motor_off(last_move_time)
+        self.printer.send_event("toolhead:motor_off", last_move_time)
         self.dwell(STALL_TIME)
         logging.debug('; Max time of %f', last_move_time)
     def wait_moves(self):
@@ -388,6 +402,10 @@ class ToolHead:
         is_active = buffer_time > -60. or not self.sync_print_time
         return is_active, "print_time=%.3f buffer_time=%.3f print_stall=%d" % (
             self.print_time, max(buffer_time, 0.), self.print_stall)
+    def check_busy(self, eventtime):
+        est_print_time = self.mcu.estimated_print_time(eventtime)
+        lookahead_empty = not self.move_queue.queue
+        return self.print_time, est_print_time, lookahead_empty
     def get_status(self, eventtime):
         print_time = self.print_time
         estimated_print_time = self.mcu.estimated_print_time(eventtime)
@@ -400,13 +418,11 @@ class ToolHead:
         return { 'status': status, 'print_time': print_time,
                  'estimated_print_time': estimated_print_time,
                  'printing_time': print_time - last_print_start_time }
-    def printer_state(self, state):
-        if state == 'shutdown':
-            try:
-                self.move_queue.reset()
-                self.reset_print_time()
-            except:
-                logging.exception("Exception in toolhead shutdown")
+    def _handle_request_restart(self, print_time):
+        self.motor_off()
+    def _handle_shutdown(self):
+        self.move_queue.reset()
+        self.reset_print_time()
     def get_kinematics(self):
         return self.kin
     def get_max_velocity(self):
@@ -426,20 +442,18 @@ class ToolHead:
     def cmd_SET_VELOCITY_LIMIT(self, params):
         print_time = self.get_last_move_time()
         gcode = self.printer.lookup_object('gcode')
-        max_velocity = gcode.get_float(
-            'VELOCITY', params, self.max_velocity,
-            above=0., maxval=self.config_max_velocity)
-        max_accel = gcode.get_float(
-            'ACCEL', params, self.max_accel,
-            above=0., maxval=self.config_max_accel)
+        max_velocity = gcode.get_float('VELOCITY', params, self.max_velocity,
+                                       above=0.)
+        max_accel = gcode.get_float('ACCEL', params, self.max_accel, above=0.)
         square_corner_velocity = gcode.get_float(
             'SQUARE_CORNER_VELOCITY', params, self.square_corner_velocity,
-            minval=0., maxval=self.config_square_corner_velocity)
+            minval=0.)
         self.requested_accel_to_decel = gcode.get_float(
             'ACCEL_TO_DECEL', params, self.requested_accel_to_decel, above=0.)
-        self.max_velocity = max_velocity
-        self.max_accel = max_accel
-        self.square_corner_velocity = square_corner_velocity
+        self.max_velocity = min(max_velocity, self.config_max_velocity)
+        self.max_accel = min(max_accel, self.config_max_accel)
+        self.square_corner_velocity = min(square_corner_velocity,
+                                          self.config_square_corner_velocity)
         self._calc_junction_deviation()
         msg = ("max_velocity: %.6f\n"
                "max_accel: %.6f\n"
@@ -448,7 +462,7 @@ class ToolHead:
                    max_velocity, max_accel, self.requested_accel_to_decel,
                    square_corner_velocity))
         self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
-        gcode.respond_info(msg)
+        gcode.respond_info(msg, log=False)
     def cmd_M204(self, params):
         gcode = self.printer.lookup_object('gcode')
         if 'P' in params and 'T' in params and 'S' not in params:

@@ -16,7 +16,8 @@ COMPILE_CMD = ("gcc -Wall -g -O2 -shared -fPIC"
                " -o %s %s")
 SOURCE_FILES = [
     'pyhelper.c', 'serialqueue.c', 'stepcompress.c', 'itersolve.c',
-    'kin_cartesian.c', 'kin_corexy.c', 'kin_delta.c', 'kin_extruder.c'
+    'kin_cartesian.c', 'kin_corexy.c', 'kin_delta.c', 'kin_polar.c',
+    'kin_winch.c', 'kin_extruder.c',
 ]
 DEST_LIB = "c_helper.so"
 OTHER_FILES = [
@@ -31,7 +32,8 @@ defs_stepcompress = """
     void stepcompress_free(struct stepcompress *sc);
     int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);
     int stepcompress_set_homing(struct stepcompress *sc, uint64_t homing_clock);
-    int stepcompress_queue_msg(struct stepcompress *sc, uint32_t *data, int len);
+    int stepcompress_queue_msg(struct stepcompress *sc
+        , uint32_t *data, int len);
 
     struct steppersync *steppersync_alloc(struct serialqueue *sq
         , struct stepcompress **sc_list, int sc_num, int move_num);
@@ -70,6 +72,15 @@ defs_kin_delta = """
         , double tower_x, double tower_y);
 """
 
+defs_kin_polar = """
+    struct stepper_kinematics *polar_stepper_alloc(char type);
+"""
+
+defs_kin_winch = """
+    struct stepper_kinematics *winch_stepper_alloc(double anchor_x
+        , double anchor_y, double anchor_z);
+"""
+
 defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
     void extruder_move_fill(struct move *m, double print_time
@@ -95,7 +106,8 @@ defs_serialqueue = """
         , uint8_t *msg, int len, uint64_t min_clock, uint64_t req_clock);
     void serialqueue_pull(struct serialqueue *sq
         , struct pull_queue_message *pqm);
-    void serialqueue_set_baud_adjust(struct serialqueue *sq, double baud_adjust);
+    void serialqueue_set_baud_adjust(struct serialqueue *sq
+        , double baud_adjust);
     void serialqueue_set_receive_window(struct serialqueue *sq
         , int receive_window);
     void serialqueue_set_clock_est(struct serialqueue *sq, double est_freq
@@ -115,8 +127,10 @@ defs_std = """
 """
 
 defs_all = [
-    defs_pyhelper, defs_serialqueue, defs_std, defs_stepcompress, defs_itersolve,
-    defs_kin_cartesian, defs_kin_corexy, defs_kin_delta, defs_kin_extruder
+    defs_pyhelper, defs_serialqueue, defs_std,
+    defs_stepcompress, defs_itersolve,
+    defs_kin_cartesian, defs_kin_corexy, defs_kin_delta, defs_kin_polar,
+    defs_kin_winch, defs_kin_extruder
 ]
 
 # Return the list of file modification times
@@ -180,3 +194,7 @@ def run_hub_ctrl(enable_power):
     hubdir = os.path.join(srcdir, HC_SOURCE_DIR)
     check_build_code(hubdir, HC_TARGET, HC_SOURCE_FILES, HC_COMPILE_CMD)
     os.system(HC_CMD % (hubdir, enable_power))
+
+
+if __name__ == '__main__':
+    get_ffi()

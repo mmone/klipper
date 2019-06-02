@@ -143,6 +143,7 @@ class DeltaCalibrate:
             points.append((math.cos(r) * dist, math.sin(r) * dist))
         self.probe_helper = probe.ProbePointsHelper(
             config, self.probe_finalize, default_points=points)
+        self.probe_helper.minimum_points(3)
         # Restore probe stable positions
         self.last_probe_positions = []
         for i in range(999):
@@ -216,12 +217,7 @@ class DeltaCalibrate:
             adj_params += ('arm_a', 'arm_b', 'arm_c')
             z_weight = len(distances) / (MEASURE_WEIGHT * len(probe_positions))
         # Perform coordinate descent
-        call_count = [0]
         def delta_errorfunc(params):
-            call_count[0] += 1
-            if not call_count[0] % 1000:
-                self.gcode.respond_info("Working on calibration...")
-                self.printer.get_reactor().pause(0.)
             # Build new delta_params for params under test
             delta_params = build_delta_params(params)
             # Calculate z height errors
@@ -237,8 +233,8 @@ class DeltaCalibrate:
                 d = math.sqrt((x1-x2)**2 + (y1-y2)**2 + (z1-z2)**2)
                 total_error += (d - dist)**2
             return total_error
-        new_params = mathutil.coordinate_descent(
-            adj_params, params, delta_errorfunc)
+        new_params = mathutil.background_coordinate_descent(
+            self.printer, adj_params, params, delta_errorfunc)
         # Log and report results
         logging.info("Calculated delta_calibrate parameters: %s", new_params)
         new_delta_params = build_delta_params(new_params)
@@ -274,7 +270,6 @@ class DeltaCalibrate:
         self.save_state(probe_positions, distances, new_params)
     cmd_DELTA_CALIBRATE_help = "Delta calibration script"
     def cmd_DELTA_CALIBRATE(self, params):
-        self.gcode.run_script_from_command("G28")
         self.probe_helper.start_probe(params)
     def do_extended_calibration(self):
         # Extract distance positions
