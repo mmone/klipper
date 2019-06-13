@@ -7,7 +7,12 @@ printer motion on a delta printer. Each one of these parameters has a
 non-obvious and non-linear impact and it is difficult to calibrate
 them manually. In contrast, the software calibration code can provide
 excellent results with just a few minutes of time. No special probing
-hardware is necessary to get good results.
+hardware is necessary.
+
+Ultimately, the delta calibration is dependent on the precision of the
+tower endstop switches. If one is using Trinamic stepper motor drivers
+then consider enabling [endstop phase](Endstop_Phase.md) detection to
+improve the accuracy of those switches.
 
 Basic delta calibration
 =======================
@@ -32,20 +37,24 @@ the bed. It is typical to permit this during calibration by updating
 the config so that the printer's `minimum_z_position=-5`. (Once
 calibration completes, one can remove this setting from the config.)
 
-There are two ways to perform the probing - manual probing and
-automatic probing. Automatic probing utilizes a hardware device
+There are two ways to perform the probing - manual probing
+(`DELTA_CALIBRATE METHOD=manual`) and automatic probing
+(`DELTA_CALIBRATE`). Automatic probing utilizes a hardware device
 capable of triggering when the toolhead is at a set distance from the
-bed. Manual probing involves using the "paper test" to determine the
-height at each probe point. It is recommended to use manual probing
-for delta calibration. A number of common printer kits come with
-probes that are not sufficiently accurate (specifically, small
-differences in arm length can cause effector tilt which can skew an
-automatic probe). Manual probing only takes a few minutes and it
-eliminates error introduced by the probe.
+bed. The manual probing method will move the head near the bed and
+then wait for the user to follow the steps described at
+["the paper test"](Bed_Level.md#the-paper-test) to determine the
+actual distance between the nozzle and bed at the given location. It
+is recommended to use manual probing for delta calibration. A number
+of common printer kits come with probes that are not sufficiently
+accurate (specifically, small differences in arm length can cause
+effector tilt which can skew an automatic probe). Manual probing only
+takes a few minutes and it eliminates error introduced by the probe.
 
 To perform the basic probe, make sure the config has a
 [delta_calibrate] section defined and run:
 ```
+G28
 DELTA_CALIBRATE METHOD=manual
 ```
 After probing the seven points new delta parameters will be
@@ -55,7 +64,7 @@ SAVE_CONFIG
 ```
 
 The basic calibration should provide delta parameters that are
-accurate enough for basic printing.  If this is a new printer, this is
+accurate enough for basic printing. If this is a new printer, this is
 a good time to print some basic objects and verify general
 functionality.
 

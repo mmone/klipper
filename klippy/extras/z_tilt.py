@@ -9,6 +9,8 @@ import probe, mathutil
 class ZTilt:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.printer.register_event_handler("klippy:connect",
+                                            self.handle_connect)
         z_positions = config.get('z_positions').split('\n')
         try:
             z_positions = [line.split(',', 1)
@@ -21,15 +23,13 @@ class ZTilt:
         if len(z_positions) < 2:
             raise config.error("z_tilt requires at least two z_positions")
         self.probe_helper = probe.ProbePointsHelper(config, self.probe_finalize)
+        self.probe_helper.minimum_points(2)
         self.z_steppers = []
         # Register Z_TILT_ADJUST command
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command(
             'Z_TILT_ADJUST', self.cmd_Z_TILT_ADJUST,
             desc=self.cmd_Z_TILT_ADJUST_help)
-    def printer_state(self, state):
-        if state == 'connect':
-            self.handle_connect()
     def handle_connect(self):
         kin = self.printer.lookup_object('toolhead').get_kinematics()
         z_steppers = kin.get_steppers('Z')
@@ -69,7 +69,7 @@ class ZTilt:
         except:
             logging.exception("z_tilt adjust_steppers")
             for s in self.z_steppers:
-                z.set_ignore_move(False)
+                s.set_ignore_move(False)
             raise
     def adjust_steppers(self, x_adjust, y_adjust, z_adjust):
         toolhead = self.printer.lookup_object('toolhead')
@@ -85,7 +85,6 @@ class ZTilt:
         stepstrs = ["%s = %.6f" % (s.get_name(), so) for so, s in positions]
         msg = "Making the following Z adjustments:\n%s\nz_adjust = %.6f" % (
             "\n".join(stepstrs), z_adjust)
-        logging.info(msg)
         self.gcode.respond_info(msg)
         # Move each z stepper (sorted from lowest to highest) until they match
         positions.sort()
@@ -101,7 +100,7 @@ class ZTilt:
         # Z should now be level - do final cleanup
         last_stepper_offset, last_stepper = positions[-1]
         last_stepper.set_ignore_move(False)
-        curpos[2] -= z_adjust
+        curpos[2] -= z_adjust - first_stepper_offset
         toolhead.set_position(curpos)
         self.gcode.reset_last_position()
 

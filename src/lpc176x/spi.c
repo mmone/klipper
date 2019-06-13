@@ -10,6 +10,9 @@
 #include "internal.h" // gpio_peripheral
 #include "sched.h" // sched_shutdown
 
+DECL_ENUMERATION("spi_bus", "ssp0", 0);
+DECL_CONSTANT_STR("BUS_PINS_ssp0", "P0.17,P0.18,P0.15");
+
 static void
 spi_init(void)
 {
@@ -18,10 +21,13 @@ spi_init(void)
         return;
     have_run_init = 1;
 
-    // Configure SCK0, MISO0, MOSI0 pins
-    gpio_peripheral(0, 15, 2, 0);
-    gpio_peripheral(0, 17, 2, 0);
-    gpio_peripheral(0, 18, 2, 0);
+    // Configure MISO0, MOSI0, SCK0 pins
+    gpio_peripheral(GPIO(0, 17), 2, 0);
+    gpio_peripheral(GPIO(0, 18), 2, 0);
+    gpio_peripheral(GPIO(0, 15), 2, 0);
+
+    // Setup clock
+    enable_pclock(PCLK_SSP0);
 
     // Set initial registers
     LPC_SSP0->CR0 = 0x07;
@@ -32,7 +38,7 @@ spi_init(void)
 struct spi_config
 spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 {
-    if (bus || mode > 3)
+    if (bus)
         shutdown("Invalid spi_setup parameters");
 
     // Make sure bus is enabled
@@ -40,7 +46,7 @@ spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 
     // Setup clock rate and mode
     struct spi_config res = {0, 0};
-    uint32_t pclk = SystemCoreClock / 4;
+    uint32_t pclk = SystemCoreClock;
     uint32_t div = DIV_ROUND_UP(pclk/2, rate) << 1;
     res.cpsr = div < 2 ? 2 : (div > 254 ? 254 : div);
     res.cr0 = 0x07 | (mode << 6);

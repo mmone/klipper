@@ -99,7 +99,7 @@ invoked, and it may invoke sendf() at any time from a task handler.
 
 ### Output responses
 
-To simplify debugging, there is also has an output() C function. For
+To simplify debugging, there is also an output() C function. For
 example:
 
 ```
@@ -109,17 +109,46 @@ output("The value of %u is %s with size %u.", x, buf, buf_len);
 The output() function is similar in usage to printf() - it is intended
 to generate and format arbitrary messages for human consumption.
 
+Declaring enumerations
+----------------------
+
+Enumerations allow the host code to use string identifiers for
+parameters that the micro-controller handles as integers. They are
+declared in the micro-controller code - for example:
+
+```
+DECL_ENUMERATION("spi_bus", "spi", 0);
+
+DECL_ENUMERATION_RANGE("pin", "PC0", 16, 8);
+```
+
+If the first example, the DECL_ENUMERATION() macro defines an
+enumeration for any command/response message with a parameter name of
+"spi_bus" or parameter name with a suffix of "_spi_bus". For those
+parameters the string "spi" is a valid value and it will be
+transmitted with an integer value of zero.
+
+It's also possible to declare an enumeration range. In the second
+example, a "pin" parameter (or any parameter with a suffix of "_pin")
+would accept PC0, PC1, PC2, ..., PC7 as valid values. The strings will
+be transmitted with integers 16, 17, 18, ..., 23.
+
 Declaring constants
 -------------------
 
 Constants can also be exported. For example, the following:
 
 ```
-DECL_CONSTANT(SERIAL_BAUD, 250000);
+DECL_CONSTANT("SERIAL_BAUD", 250000);
 ```
 
 would export a constant named "SERIAL_BAUD" with a value of 250000
-from the micro-controller to the host.
+from the micro-controller to the host. It is also possible to declare
+a constant that is a string - for example:
+
+```
+DECL_CONSTANT_STR("MCU", "pru");
+```
 
 Low-level message encoding
 ==========================
@@ -174,20 +203,20 @@ message block:
 set_digital_out pin=86 value=1
 set_digital_out pin=85 value=0
 get_config
-get_status
+get_clock
 ```
 
 and encoded into the following eight VLQ integers:
 
 ```
-<id_set_digital_out><86><1><id_set_digital_out><85><0><id_get_config><id_get_status>
+<id_set_digital_out><86><1><id_set_digital_out><85><0><id_get_config><id_get_clock>
 ```
 
 In order to encode and parse the message contents, both the host and
 micro-controller must agree on the command ids and the number of
 parameters each command has. So, in the above example, both the host
 and micro-controller would know that "id_set_digital_out" is always
-followed by two parameters, and "id_get_config" and "id_get_status"
+followed by two parameters, and "id_get_config" and "id_get_clock"
 have zero parameters. The host and micro-controller share a "data
 dictionary" that maps the command descriptions (eg, "set_digital_out
 pin=%u value=%c") to their integer command-ids. When processing the
@@ -277,24 +306,9 @@ dictionary. Once all chunks are obtained the host will assemble the
 chunks, uncompress the data, and parse the contents.
 
 In addition to information on the communication protocol, the data
-dictionary also contains the software version, constants (as defined
-by DECL_CONSTANT), and static strings.
-
-Static Strings
---------------
-
-To reduce bandwidth the data dictionary also contains a set of static
-strings known to the micro-controller. This is useful when sending
-messages from micro-controller to host. For example, if the
-micro-controller were to run:
-
-```
-shutdown("Unable to handle command");
-```
-
-The error message would be encoded and sent using a single VLQ. The
-host uses the data dictionary to resolve VLQ encoded static string ids
-to their associated human-readable strings.
+dictionary also contains the software version, enumerations (as
+defined by DECL_ENUMERATION), and constants (as defined by
+DECL_CONSTANT).
 
 Message flow
 ============

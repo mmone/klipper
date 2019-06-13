@@ -18,7 +18,7 @@ install_packages()
     # AVR chip installation and building
     PKGLIST="${PKGLIST} avrdude gcc-avr binutils-avr avr-libc"
     # ARM chip installation and building
-    PKGLIST="${PKGLIST} stm32flash libnewlib-arm-none-eabi"
+    PKGLIST="${PKGLIST} stm32flash dfu-util libnewlib-arm-none-eabi"
     PKGLIST="${PKGLIST} gcc-arm-none-eabi binutils-arm-none-eabi"
 
     # Update system package info
@@ -39,13 +39,7 @@ create_virtualenv()
     [ ! -d ${PYTHONDIR} ] && virtualenv ${PYTHONDIR}
 
     # Install/update dependencies
-    ${PYTHONDIR}/bin/pip install cffi==1.6.0 pyserial==3.2.1 greenlet==0.4.10 svgwrite==1.1.12
-    
-    # Clone and install svgpathtools if it doesn't already exist
-    if [ ! -d "${HOME}/svgpathtools" ]; then
-      git clone ${SVGPATHTOOLS_REPO} "${HOME}/svgpathtools"
-      ${PYTHONDIR}/bin/pip install "${HOME}/svgpathtools"
-    fi
+    ${PYTHONDIR}/bin/pip install -r ${SRCDIR}/scripts/klippy-requirements.txt
 }
 
 # Step 3: Install startup script
