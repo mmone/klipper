@@ -126,6 +126,7 @@ class SvgParser:
             return
         self.gcode.respond("SVG printing path %d/%d" % (
             self.current_path, self.path_count))
+
     # Background work timer
     def work_handler(self, eventtime):
         self.reactor.unregister_timer(self.work_timer)
